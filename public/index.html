@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>MusicD Migrate</title>
+<link rel="icon" href="icons/favicon-64.png" sizes="64x64">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!--
+  ONE PAGE, NO FRAMEWORK, NO BUILD STEP.
+
+  This directory is bundled into the Android APK byte for byte and served there
+  from a loopback HTTP server, exactly as MusicD Remote Lite bundles
+  MusicD-Remote's public/. So it may only ever talk to /api/... over HTTP —
+  anything that depended on Node, on a bundler, or on an absolute origin would
+  work in Docker and be broken in the APK, where nobody would be looking.
+-->
+
+<header class="top">
+  <h1>MusicD&nbsp;Migrate</h1>
+  <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify.</p>
+</header>
+
+<main id="main" hidden>
+
+  <!-- ------------------------------------------------------- connections -->
+  <section class="card" id="connections">
+    <h2>Connections</h2>
+
+    <div class="svc" id="svc-qobuz">
+      <div class="svc-head">
+        <span class="dot" id="qobuz-dot"></span>
+        <strong>Qobuz</strong>
+        <span class="who" id="qobuz-who"></span>
+        <button class="ghost" id="qobuz-signout" hidden>Sign out</button>
+      </div>
+      <div class="svc-body" id="qobuz-body">
+        <p class="hint">Sign in on Qobuz's own page. Nothing is typed into this app.</p>
+        <div class="row">
+          <button class="primary" id="qobuz-start">Sign in with Qobuz</button>
+          <button class="ghost" id="qobuz-manual-toggle">Can't get back here?</button>
+        </div>
+        <div class="fold" id="qobuz-manual" hidden>
+          <p class="hint">
+            If the sign-in cannot redirect back — you are on a phone and this app is on a
+            server elsewhere — copy the whole address from the page it lands on and paste it
+            here.
+          </p>
+          <div class="row">
+            <input type="text" id="qobuz-paste" placeholder="Paste the address you landed on">
+            <button id="qobuz-paste-go">Finish</button>
+          </div>
+          <details>
+            <summary>Or sign in with an email and password</summary>
+            <p class="hint">
+              The fallback. Your password is hashed before it is sent, the way Qobuz's API
+              wants it, and the plaintext is never stored — but the redirect above is still
+              the better way, because this app never sees anything at all.
+            </p>
+            <div class="row">
+              <input type="email" id="qobuz-user" placeholder="Qobuz email" autocomplete="username">
+              <input type="password" id="qobuz-pass" placeholder="Password"
+                     autocomplete="current-password">
+              <button id="qobuz-login">Sign in</button>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <div class="svc" id="svc-spotify">
+      <div class="svc-head">
+        <span class="dot" id="spotify-dot"></span>
+        <strong>Spotify</strong>
+        <span class="who" id="spotify-who"></span>
+        <button class="ghost" id="spotify-signout" hidden>Sign out</button>
+      </div>
+      <div class="svc-body" id="spotify-body">
+        <details id="spotify-setup">
+          <summary>First time: create a Spotify app (about a minute)</summary>
+          <ol class="steps">
+            <li>Open <a href="https://developer.spotify.com/dashboard" target="_blank"
+                rel="noopener">developer.spotify.com/dashboard</a> and click
+                <b>Create app</b>.</li>
+            <li>Name it anything. For <b>Redirect URI</b> paste exactly this:
+              <code class="copy" id="redirect-uri" tabindex="0" role="button"
+                    title="Click to copy"></code>
+              <span class="warn" id="redirect-warn" hidden></span>
+            </li>
+            <li>Tick <b>Web API</b>, save, then <b>Settings</b> → copy the <b>Client ID</b>.</li>
+          </ol>
+          <p class="hint">
+            Spotify will not issue tokens to an app it does not know, and an app is
+            registered against fixed redirect addresses — so no shared Client ID could
+            ever list yours. It is free, and nothing but your own account uses it.
+          </p>
+        </details>
+        <div class="row">
+          <input type="text" id="spotify-client-id" placeholder="Spotify Client ID"
+                 spellcheck="false" autocomplete="off">
+          <button id="spotify-save-id">Save</button>
+        </div>
+        <div class="row">
+          <button class="primary" id="spotify-start">Sign in with Spotify</button>
+          <button class="ghost" id="spotify-manual-toggle">Can't get back here?</button>
+        </div>
+        <div class="fold" id="spotify-manual" hidden>
+          <p class="hint">
+            Spotify only redirects to <code>127.0.0.1</code> over plain http, so a sign-in
+            started from another device lands on a page that will not load. That is fine:
+            copy the whole address from it and paste it here.
+          </p>
+          <div class="row">
+            <input type="text" id="spotify-paste" placeholder="Paste the address you landed on">
+            <button id="spotify-paste-go">Finish</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- the run -->
+  <section class="card" id="setup">
+    <h2>What to move</h2>
+
+    <div class="direction" role="group" aria-label="Direction">
+      <button class="dir on" id="dir-q2s" data-dir="qobuz-to-spotify">
+        Qobuz <span aria-hidden="true">→</span> Spotify</button>
+      <button class="dir" id="dir-s2q" data-dir="spotify-to-qobuz">
+        Spotify <span aria-hidden="true">→</span> Qobuz</button>
+    </div>
+
+    <div class="kinds">
+      <label><input type="checkbox" id="k-playlists" checked> Playlists</label>
+      <label><input type="checkbox" id="k-albums" checked> Favourite albums</label>
+      <label><input type="checkbox" id="k-artists" checked> Followed artists</label>
+      <label><input type="checkbox" id="k-tracks" checked> Favourite tracks</label>
+    </div>
+
+    <div id="playlist-pick" hidden>
+      <div class="pl-head">
+        <strong>Playlists</strong>
+        <span class="hint" id="pl-count"></span>
+        <button class="ghost" id="pl-all">All</button>
+        <button class="ghost" id="pl-none">None</button>
+        <button class="ghost" id="pl-load">Refresh</button>
+      </div>
+      <div class="pl-list" id="pl-list"></div>
+    </div>
+
+    <details class="opts">
+      <summary>Options</summary>
+      <label class="opt">
+        <input type="checkbox" id="o-dry" checked>
+        <span><b>Preview first (dry run)</b> — does every lookup and writes nothing.
+        The result is the real answer, not an estimate.</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="o-strict">
+        <span><b>Only certain matches</b> — accept a track only when both services agree on
+        its ISRC. Fewer records move; every one that does is the same recording.</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="o-others">
+        <span><b>Include playlists you don't own</b> — ones you follow rather than
+        made.</span>
+      </label>
+      <label class="opt">
+        <span>If a playlist of that name is already there:</span>
+        <select id="o-existing">
+          <option value="add-missing" selected>Add only what is missing</option>
+          <option value="create-new">Make another one</option>
+          <option value="skip">Leave it alone</option>
+        </select>
+      </label>
+      <label class="opt">
+        <span>Name migrated playlists with a suffix:</span>
+        <input type="text" id="o-suffix" placeholder="(none)" maxlength="40">
+      </label>
+    </details>
+
+    <div class="row go">
+      <button class="primary big" id="go">Preview</button>
+      <span class="hint" id="go-hint"></span>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------- progress -->
+  <section class="card" id="progress" hidden>
+    <h2 id="prog-title">Running</h2>
+    <div class="bar"><div class="fill" id="prog-fill"></div></div>
+    <p class="prog-label" id="prog-label"></p>
+    <div class="counts" id="prog-counts"></div>
+    <div class="row">
+      <button class="ghost" id="cancel">Stop</button>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- results -->
+  <section class="card" id="results" hidden>
+    <h2 id="res-title">Result</h2>
+    <div class="counts" id="res-counts"></div>
+    <div class="row">
+      <button id="res-unmatched" class="ghost">What didn't move</button>
+      <a class="ghost btn" id="res-csv" download>Download the full report (CSV)</a>
+      <button class="ghost" id="res-close">Close</button>
+    </div>
+    <div class="items" id="res-items" hidden></div>
+  </section>
+
+  <!-- ----------------------------------------------------------- history -->
+  <section class="card" id="history">
+    <h2>Previous runs</h2>
+    <div id="history-list" class="history"></div>
+    <div class="row">
+      <span class="hint" id="cache-note"></span>
+      <button class="ghost" id="cache-clear">Forget cached lookups</button>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span id="version"></span> ·
+    <a href="https://github.com/meltface-80/MusicD-Migrate" target="_blank"
+       rel="noopener">MusicD Migrate</a>
+    <p class="hint small">
+      Qobuz has no public API. This app uses the same unofficial one every open-source
+      Qobuz client uses, which is against Qobuz's terms of service and can stop working
+      without notice. The Spotify side is the official Web API.
+    </p>
+  </footer>
+</main>
+
+<!-- The PIN gate, when MIGRATE_PIN is set on the server. -->
+<section class="card pin" id="pin-gate" hidden>
+  <h2>PIN</h2>
+  <p class="hint">This copy of MusicD Migrate is PIN protected.</p>
+  <div class="row">
+    <input type="password" id="pin-input" placeholder="PIN" autocomplete="off"
+           inputmode="numeric">
+    <button class="primary" id="pin-go">Unlock</button>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
