@@ -302,11 +302,23 @@ class Migration(
     private fun migratePlaylists() {
         val all = source.playlists()
         val wanted = if (options.playlistIds != null) {
+            // The user named them. No ownership check is wanted or needed.
             all.filter { options.playlistIds.contains(it.id) }
         } else {
+            // Filtering to the user's OWN playlists needs to know who they
+            // are, and a client built straight from a stored session has never
+            // called me(). When the stored id was empty, `ownerId == ""` was
+            // false for every playlist, EVERY ONE was filtered out, and the
+            // migration reported nothing while looking like it had simply
+            // found nothing to do.
+            val me = sourceAccountId()
             all.filter {
                 options.includeOthersPlaylists || it.ownerId.isEmpty() ||
-                    it.ownerId == source.accountId
+                    // Still unknown: the service would not say. There is then
+                    // no way to tell an owned playlist from a followed one,
+                    // and including them is the useful failure — silently
+                    // migrating nothing is not.
+                    me.isEmpty() || it.ownerId == me
             }
         }
 
@@ -412,6 +424,30 @@ class Migration(
                 record(JobItem("playlist", pl.id, pl.name, "failed", note = e.message))
             }
         }
+    }
+
+    /**
+     * Who the source account is, asking the service once if it does not know.
+     *
+     * Cached: a failure is worth one request per migration, not one per
+     * playlist.
+     */
+    private var cachedAccountId: String? = null
+
+    private fun sourceAccountId(): String {
+        cachedAccountId?.let { return it }
+        var id = source.accountId
+        if (id.isEmpty()) {
+            id = try {
+                source.me().id
+            } catch (e: AuthError) {
+                throw e
+            } catch (e: Exception) {
+                ""
+            }
+        }
+        cachedAccountId = id
+        return id
     }
 
     // ------------------------------------------------------------------ lookups

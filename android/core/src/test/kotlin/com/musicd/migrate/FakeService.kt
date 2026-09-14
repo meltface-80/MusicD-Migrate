@@ -37,7 +37,15 @@ open class FakeService(
     var playlistsOverride: (() -> List<Playlist>)? = null
     var searchByIsrcAuthFails = false
 
-    override fun me() = Account(accountId, "Fake")
+    var meCalls = 0
+    var meFails = false
+
+    override fun me(): Account {
+        meCalls++
+        if (meFails) throw RuntimeException("user/get is having a day")
+        if (accountId.isEmpty()) accountId = "me"
+        return Account(accountId, "Fake")
+    }
 
     override fun playlists(): List<Playlist> =
         playlistsOverride?.invoke() ?: libPlaylists.map { (id, p) ->

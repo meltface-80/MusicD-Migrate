@@ -323,9 +323,9 @@ container" is something that fails a build rather than something to hope for.
 ## Verification
 
 ```bash
-npm test                                   # 82 tests: units + the API over a socket
+npm test                                   # 85 tests: units + the API over a socket
 npx eslint --config tools/eslint.config.mjs public/app.js
-cd android && ./gradlew :core:test         # 99 tests, the JS suite translated
+cd android && ./gradlew :core:test         # 102 tests, the JS suite translated
 ```
 
 Neither suite needs a Qobuz or Spotify account: the service clients are driven

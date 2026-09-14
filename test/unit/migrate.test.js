@@ -357,3 +357,55 @@ test("nothing selected does nothing, and does not fail", async () => {
   assert.strictEqual(result.counts.matched, 0);
   assert.strictEqual(target.searchCount, 0);
 });
+
+// --------------------------------------------------------------------------
+// Regression: the migration has to know whose playlists are whose.
+//
+// migratePlaylists filters to the source's OWN playlists, which needs the
+// account id. A client built straight from a stored session has never called
+// me(), and /api/migrate does not call it either — so when the stored id was
+// empty, `p.ownerId === ""` was false for every playlist and EVERY ONE was
+// filtered out. The migration then reported nothing and looked like it had
+// simply found nothing to do.
+
+test("a migration establishes who the source account is before filtering", async () => {
+  const tracks = [src({ isrc: "GBAYE0601498" })];
+  const source = new FakeService("q", { lib: { playlists: { p1: { name: "Mix", tracks } } } });
+  // As a client built from a stored session that never learned its own id.
+  source.userId = "";
+  source.meCalls = 0;
+  source.me = async () => { source.meCalls++; source.userId = "me"; return { id: "me" }; };
+  const target = new FakeService("s", { catalogue: [dst({ isrc: "GBAYE0601498" })] });
+
+  await run(source, target, Object.assign({}, NOTHING, { playlists: true }));
+
+  assert.strictEqual(source.meCalls, 1, "it asked the service who it is");
+  assert.strictEqual(target.written.created.length, 1,
+    "the user's own playlist must not be filtered out by an unknown account id");
+});
+
+test("a source that cannot say who it is migrates playlists rather than none", async () => {
+  // If me() fails there is no way to tell an owned playlist from a followed
+  // one. Including them is the useful failure; excluding every playlist and
+  // reporting success is not.
+  const tracks = [src({ isrc: "GBAYE0601498" })];
+  const source = new FakeService("q", { lib: { playlists: { p1: { name: "Mix", tracks } } } });
+  source.userId = "";
+  source.me = async () => { throw new Error("user/get is having a day"); };
+  const target = new FakeService("s", { catalogue: [dst({ isrc: "GBAYE0601498" })] });
+
+  await run(source, target, Object.assign({}, NOTHING, { playlists: true }));
+  assert.strictEqual(target.written.created.length, 1);
+});
+
+test("an explicit playlist selection is honoured even with an unknown account", async () => {
+  const tracks = [src({ isrc: "GBAYE0601498" })];
+  const source = new FakeService("q", { lib: { playlists: { p1: { name: "Mix", tracks } } } });
+  source.userId = "";
+  source.me = async () => { throw new Error("nope"); };
+  const target = new FakeService("s", { catalogue: [dst({ isrc: "GBAYE0601498" })] });
+
+  await run(source, target, Object.assign({}, NOTHING, { playlists: ["p1"] }));
+  assert.strictEqual(target.written.created.length, 1,
+    "an id the user picked needs no ownership check at all");
+});

@@ -268,15 +268,23 @@ async function finishSpotify(parsed) {
   store.del("spotify.pending");
   store.put("spotify.session", tokens);
 
-  const sp = spotifyClient();
+  // Learning the account's name and id is a nicety — the tokens are already
+  // proven by the exchange above and are already stored. So everything here is
+  // inside the guard, including reading the client back: a null client (or a
+  // me() that throws) must not turn a good sign-in into a reported failure.
   let name = "";
+  let userId = "";
   try {
-    name = (await sp.me()).name;
+    const sp = spotifyClient();
+    const account = await sp.me();
+    name = account.name || "";
+    userId = sp.session.userId || "";
   } catch (e) {
     name = "";
+    userId = "";
   }
   store.put("spotify.session", Object.assign({}, store.get("spotify.session"),
-    { name, userId: sp.session.userId || "" }));
+    { name, userId }));
 }
 
 app.post("/api/spotify/signout", (req, res) => {

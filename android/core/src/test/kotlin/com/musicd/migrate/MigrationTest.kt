@@ -320,4 +320,49 @@ class MigrationTest {
         assertEquals("done", p!!.str("phase"))
         assertEquals(1, p.objOrNull("counts")!!.intOrNull("matched"))
     }
+    // ----------------------------------------------------------------------
+    // Regression: the migration has to know whose playlists are whose. The
+    // JavaScript twin of these is at the end of test/unit/migrate.test.js.
+
+    @Test fun `a migration establishes who the source account is before filtering`() {
+        val source = FakeService("qobuz")
+        source.libPlaylists["p1"] = "Mix" to mutableListOf(src(isrc = "GBAYE0601498"))
+        // As a client built from a stored session that never learned its id.
+        source.accountId = ""
+        val target = FakeService("spotify",
+            catalogue = mutableListOf(dst(isrc = "GBAYE0601498")))
+
+        run(source, target, NOTHING.copy(doPlaylists = true))
+
+        assertEquals("it asked the service who it is", 1, source.meCalls)
+        assertEquals("the user's own playlist must not be filtered out by an unknown id",
+            1, target.created.size)
+    }
+
+    @Test fun `a source that cannot say who it is migrates playlists rather than none`() {
+        val source = FakeService("qobuz")
+        source.libPlaylists["p1"] = "Mix" to mutableListOf(src(isrc = "GBAYE0601498"))
+        source.accountId = ""
+        source.meFails = true
+        val target = FakeService("spotify",
+            catalogue = mutableListOf(dst(isrc = "GBAYE0601498")))
+
+        run(source, target, NOTHING.copy(doPlaylists = true))
+        assertEquals(1, target.created.size)
+    }
+
+    @Test fun `an explicit playlist selection is honoured even with an unknown account`() {
+        val source = FakeService("qobuz")
+        source.libPlaylists["p1"] = "Mix" to mutableListOf(src(isrc = "GBAYE0601498"))
+        source.accountId = ""
+        source.meFails = true
+        val target = FakeService("spotify",
+            catalogue = mutableListOf(dst(isrc = "GBAYE0601498")))
+
+        run(source, target, NOTHING.copy(doPlaylists = true, playlistIds = listOf("p1")))
+        assertEquals("an id the user picked needs no ownership check at all",
+            1, target.created.size)
+        assertEquals("and no request to find out who they are", 0, source.meCalls)
+    }
+
 }
