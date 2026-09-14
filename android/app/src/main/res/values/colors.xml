@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The same two colours the page uses, so the splash and the launcher
+         icon match what opens. See public/style.css. -->
+    <color name="background">#131314</color>
+    <color name="accent">#3EA672</color>
+</resources>

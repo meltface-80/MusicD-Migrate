@@ -1,0 +1,29 @@
+# Run with:  docker compose up -d   then open http://<this-host>:3380
+#
+# Builds straight from the GitHub repository — no container registry and no
+# manual download step.
+#
+# WHY PORT 3380 IS PUBLISHED RATHER THAN network_mode: host. Both services send
+# the browser back here after sign-in, to an address derived from the one you
+# opened the page on. A published port is reached identically from this machine
+# and from a phone on the same network, which is what makes the redirect work
+# in both places.
+services:
+  musicd-migrate:
+    build: https://github.com/meltface-80/MusicD-Migrate.git#main
+    image: musicd-migrate:0.1.0
+    container_name: musicd-migrate
+    restart: unless-stopped
+    ports:
+      - "3380:3380"
+    volumes:
+      # KEEP THIS VOLUME — it holds both services' sign-ins and the match cache.
+      # A renamed one silently starts empty: signing in again, and every track
+      # looked up from scratch on the next run.
+      - musicd-migrate-data:/app/data
+    environment:
+      # Only used to date the job history readably. Nothing depends on it.
+      - TZ=Etc/UTC
+
+volumes:
+  musicd-migrate-data:

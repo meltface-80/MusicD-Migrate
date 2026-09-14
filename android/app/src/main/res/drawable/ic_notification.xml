@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The notification icon: the same two arrows as the launcher icon, as a vector.
+
+  A notification icon is drawn as a SILHOUETTE — Android throws away the colour
+  and keeps the alpha — so this is one flat white path and any colour here
+  would be ignored.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3,8.5 L15,8.5 L15,5.5 L21,10 L15,14.5 L15,11.5 L3,11.5 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M21,15.5 L9,15.5 L9,12.5 L3,17 L9,21.5 L9,18.5 L21,18.5 Z" />
+</vector>

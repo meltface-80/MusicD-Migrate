@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MusicD Migrate</string>
+    <string name="channel_name">Migration</string>
+    <string name="channel_description">Shown while a migration is running, so it is not
+        stopped when the screen goes off.</string>
+    <string name="notification_text">Ready — open to migrate between Qobuz and Spotify.</string>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher icon's foreground layer. An adaptive icon is masked to
+     whatever shape the launcher uses, and only the middle ~66dp of the 108dp
+     canvas is guaranteed visible — which is why the arrows sit inside it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#3EA672"
+        android:pathData="M30,47 L66,47 L66,38 L84,51.5 L66,65 L66,56 L30,56 Z" />
+    <path
+        android:fillColor="#3EA672"
+        android:pathData="M78,68 L42,68 L42,59 L24,72.5 L42,86 L42,77 L78,77 Z" />
+</vector>
