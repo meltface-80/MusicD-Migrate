@@ -1,6 +1,6 @@
 {
-  "version": "0.1.1",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.1.1.apk",
-  "sha256": "cf22a93cf8b0faf08a1b4cbc1561a089b7cde7bb9f1d3f56b18244b5a1d6e118",
-  "notes": "Fixes the app being unable to load its own page (cleartext) and spacing on older WebViews."
+  "version": "0.1.2",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.1.2.apk",
+  "sha256": "fb60508cae25e8753e71daba87f4391336595507519f60aa333adb9d3f6a7e17",
+  "notes": "Spotify's redirect path is /login, which is what the shared community Client IDs accept."
 }

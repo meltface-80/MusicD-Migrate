@@ -46,6 +46,27 @@ object Pkce {
         "user-follow-modify"
     )
 
+    /**
+     * The path Spotify redirects back to: `/login`, NOT this app's own
+     * `/api/spotify/callback`.
+     *
+     * Not guessable, and it cost a release. Spotify has frozen new app
+     * registrations, so for most people the only available Client ID is one of
+     * the well-known ones the open-source Spotify ecosystem shares (librespot,
+     * ncspot, Spotty, SpotOn). Those registrations whitelist exactly ONE
+     * loopback path — `/login` — on any 127.0.0.1 port (RFC 8252). Anything
+     * else is refused before the user can sign in:
+     *
+     *     redirect_uri: Not matching configuration
+     *
+     * `/login` is what SpotOn registers too, and where this came from.
+     */
+    const val CALLBACK_PATH = "/login"
+
+    /** Still served, never advertised: for a redirect URI registered against
+     *  somebody's own app before /login became the default. */
+    const val LEGACY_CALLBACK_PATH = "/api/spotify/callback"
+
     private const val VERIFIER_ALPHABET =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 

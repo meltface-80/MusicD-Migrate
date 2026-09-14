@@ -159,7 +159,7 @@ scratch on the next run.
 
 ## Install: Android
 
-**Download: [`dist/musicd-migrate-0.1.1.apk`](dist/musicd-migrate-0.1.1.apk)**
+**Download: [`dist/musicd-migrate-0.1.2.apk`](dist/musicd-migrate-0.1.2.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once.
 
@@ -211,7 +211,7 @@ Android refuses to install an unsigned APK, so CI will not publish one: the
 `apk` job builds and checks everything, warns, and skips only the publish until
 a key is available.
 
-**The key for this project already exists.** `dist/musicd-migrate-0.1.1.apk`
+**The key for this project already exists.** `dist/musicd-migrate-0.1.2.apk`
 is signed with it, and its fingerprint is pinned in
 `tools/release-key.sha256`. Every later build has to use the **same** key or
 Android will refuse to install it over the copy already on the phone — that is
@@ -314,7 +314,7 @@ existing apps still work and only new ones are frozen.
 2. **Settings → Edit → Redirect URIs**: add the address this app shows you on
    its own Spotify card. It is derived from how you reached the page, so it is
    already right — on the phone it is
-   `http://127.0.0.1:3380/api/spotify/callback`. Save.
+   `http://127.0.0.1:3380/login`. Save.
 3. Copy the **Client ID** from that same page into this app.
 
 **If you do not have one**, the Spotify half cannot be set up yet. Both
@@ -322,26 +322,33 @@ directions of a migration need Spotify, so that blocks the whole thing. The
 dashboard's access-request form is the only sanctioned route, and it is slow.
 
 The open-source Spotify ecosystem — librespot, ncspot, Spotty, SpotOn — has
-long dealt with this by shipping a well-known Client ID that its users share.
-This app deliberately does **not** ship one: those ids belong to other
-projects, your traffic counts against their quota, and the consent screen names
-their application rather than this one. You are free to paste one into the
-Client ID field if you understand that trade-off; it is your decision to make,
-not a default this project imposes.
+long dealt with this by sharing a well-known Client ID among its users. You can
+paste one into the Client ID field and this app will work with it: **the
+redirect path is `/login` precisely so that it does.** Those registrations
+whitelist exactly one loopback path, and sending anything else gets
+`redirect_uri: Not matching configuration` before you can even sign in — which
+is what this app's original `/api/spotify/callback` got.
+
+This project deliberately does **not** ship such an id as a default. They
+belong to other projects, your traffic counts against their quota, and the
+consent screen will name their application rather than this one. Pasting one is
+a trade-off you may reasonably choose; it is not a default imposed on you.
 
 #### If Spotify refuses your redirect URI
 
 Spotify accepts `https://…` or `http://` **on the loopback IP literal only**.
-`http://127.0.0.1:3380/api/spotify/callback` is fine;
+`http://127.0.0.1:3380/login` is fine;
 `http://localhost:3380/…` is refused, and so is `http://192.168.1.50:3380/…`.
 
-Whether the **port** has to match what you registered is less clear than this
-guide once claimed. RFC 8252 says a loopback redirect's port should be ignored,
-and SpotOn's author records a spike (2026-08-13) finding that Spotify does
-accept any `127.0.0.1` port for the clients they tested. That has not been
-verified here against a registration of our own, so register the exact address
-the app displays and treat port-agnosticism as a convenience you may or may not
-get.
+The **port** is the forgiving part and the **path** is not. RFC 8252 says a
+loopback redirect's port should be ignored, and that matches what we observed:
+a shared community Client ID accepted this app's port quite happily and
+rejected it on the path alone. So the path must be exactly `/login`, which is
+what the app now uses and displays; the port it happens to be running on is
+fine either way.
+
+If you are registering your own app, just paste what the app shows you and none
+of this matters.
 
 The app checks this for you and says so before you spend a sign-in finding out.
 Two ways through:

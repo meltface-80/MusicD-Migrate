@@ -58,7 +58,8 @@ test("the right PIN gets through", async () => {
 
 test("state reports the redirect URI it would actually use", async () => {
   const j = await (await fetch(base() + "/api/state", withPin())).json();
-  assert.match(j.spotify.redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/api\/spotify\/callback$/);
+  // /login rather than /api/spotify/callback — see lib/spotify-pkce.js.
+  assert.match(j.spotify.redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/login$/);
   assert.strictEqual(j.spotify.redirectCheck.ok, true, "127.0.0.1 is one Spotify accepts");
 });
 
@@ -156,3 +157,42 @@ test("clearing the match cache reports the new size", async () => {
   const res = await fetch(base() + "/api/cache/clear", withPin({ method: "POST" }));
   assert.deepStrictEqual(await res.json(), { ok: true, cacheSize: 0 });
 });
+
+// --------------------------------------------------------------------------
+// Regression: Spotify redirects to /login, not /api/spotify/callback.
+//
+// The shared community Client IDs — the only ones available while Spotify has
+// new registrations frozen — whitelist exactly one loopback path, /login.
+// Advertising /api/spotify/callback got "redirect_uri: Not matching
+// configuration" before the user could even sign in.
+
+test("the advertised Spotify redirect URI is /login", async () => {
+  const j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.match(j.spotify.redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/login$/,
+    "anything else is refused by the shared community Client IDs");
+  assert.strictEqual(j.spotify.redirectCheck.ok, true);
+});
+
+test("/login is served, and is not swallowed by the static handler", async () => {
+  // public/ has no file called "login", so express.static passes it through —
+  // but only if the route exists at all. Before the fix this was a 404.
+  const res = await fetch(base() + "/login?error=access_denied");
+  assert.strictEqual(res.status, 200);
+  assert.match(await res.text(), /cancelled or refused/);
+});
+
+test("the old callback path is still served, so a registered URI keeps working",
+  async () => {
+    const res = await fetch(base() + "/api/spotify/callback?error=access_denied");
+    assert.strictEqual(res.status, 200);
+    assert.match(await res.text(), /cancelled or refused/);
+  });
+
+test("both callback paths bypass the PIN, since a redirect carries no header",
+  async () => {
+    // Not 401: a browser following Spotify's redirect cannot send the PIN.
+    for (const p of ["/login", "/api/spotify/callback"]) {
+      const res = await fetch(base() + p + "?error=access_denied");
+      assert.strictEqual(res.status, 200, p + " must not be behind the PIN");
+    }
+  });

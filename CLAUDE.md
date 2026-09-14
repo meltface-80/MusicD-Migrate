@@ -104,6 +104,14 @@ directory as-is.
 - **`optString` is unsafe.** Android's `org.json` returns the literal string
   `"null"` for a JSON null; the desktop one returns `""`. Every JVM test is
   blind to the difference. Use `str()` / `strOrNull()` from `Json.kt`.
+- **Spotify's redirect path is `/login`, not `/api/spotify/callback`.** The
+  shared community Client IDs — the only ones available while Spotify has new
+  registrations frozen — whitelist exactly one loopback path, and any other
+  gets `redirect_uri: Not matching configuration` before the user can sign in.
+  The port is forgiving (RFC 8252); the path is not. `Pkce.CALLBACK_PATH` and
+  `lib/spotify-pkce.js` both define it, `/api/spotify/callback` is still served
+  for an already-registered URI, and `/login` has to be routed BEFORE the
+  static fallback on both sides or it 404s looking for an asset called "login".
 - **The app cannot load its own page without a network security config.**
   Android denies cleartext HTTP by default at targetSdk 28+, and the entire UI
   is served over plain http from 127.0.0.1 by the app's own server. v0.1.0
