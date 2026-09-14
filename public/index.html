@@ -82,23 +82,43 @@
         <button class="ghost" id="spotify-signout" hidden>Sign out</button>
       </div>
       <div class="svc-body" id="spotify-body">
-        <details id="spotify-setup">
-          <summary>First time: create a Spotify app (about a minute)</summary>
-          <ol class="steps">
-            <li>Open <a href="https://developer.spotify.com/dashboard" target="_blank"
-                rel="noopener">developer.spotify.com/dashboard</a> and click
-                <b>Create app</b>.</li>
-            <li>Name it anything. For <b>Redirect URI</b> paste exactly this:
-              <code class="copy" id="redirect-uri" tabindex="0" role="button"
-                    title="Click to copy"></code>
-              <span class="warn" id="redirect-warn" hidden></span>
-            </li>
-            <li>Tick <b>Web API</b>, save, then <b>Settings</b> → copy the <b>Client ID</b>.</li>
-          </ol>
+        <!-- Open by default: this is the one thing a first-time user has to
+             read, and having it collapsed is why the first person to try the
+             app could not find where the Client ID comes from. render() closes
+             it once an id is saved. -->
+        <details id="spotify-setup" open>
+          <summary>Where do I get a Client ID?</summary>
+
           <p class="hint">
-            Spotify will not issue tokens to an app it does not know, and an app is
-            registered against fixed redirect addresses — so no shared Client ID could
-            ever list yours. It is free, and nothing but your own account uses it.
+            <b>Spotify has paused new app registrations.</b> The <b>Create app</b>
+            button on their dashboard is greyed out — "new integrations are
+            currently on hold" — so the usual advice does not work at the moment.
+          </p>
+
+          <p class="hint"><b>Redirect URI</b> — whichever route you take, this is
+            the address to register:</p>
+          <code class="copy" id="redirect-uri" tabindex="0" role="button"
+                title="Click to copy"></code>
+          <span class="warn" id="redirect-warn" hidden></span>
+
+          <ol class="steps">
+            <li><b>If you already have a Spotify app</b> — from anything at all —
+              it still works; only new ones are frozen. Open it on
+              <a href="https://developer.spotify.com/dashboard" target="_blank"
+                 rel="noopener">developer.spotify.com/dashboard</a> →
+              <b>Settings</b> → <b>Edit</b>, add the address above under
+              <b>Redirect URIs</b>, save, then copy the <b>Client ID</b>.</li>
+            <li><b>If you don't</b>, the open-source Spotify world (librespot,
+              ncspot, Spotty, SpotOn) shares well-known Client IDs among its
+              users, and one of those can be pasted below. Be aware what that
+              is: the consent screen will name <i>their</i> app rather than this
+              one, and your requests count against their quota. This app does
+              not ship one — that choice is yours to make.</li>
+          </ol>
+
+          <p class="hint">
+            No client secret either way. Sign-in uses PKCE, so nothing secret is
+            stored in this app.
           </p>
         </details>
         <div class="row">

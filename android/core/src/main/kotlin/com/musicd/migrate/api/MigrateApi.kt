@@ -100,6 +100,12 @@ class MigrateApi(
 
     private fun route(req: Request): Response {
         val p = req.path
+
+        // Spotify's redirect target, which is NOT under /api/ — so it has to be
+        // matched before the static fallback or it would 404 looking for a file
+        // called "login". See Pkce.CALLBACK_PATH for why the path is /login.
+        if (p == Pkce.CALLBACK_PATH) return spotifyCallback(req)
+
         if (!p.startsWith("/api/")) return static(req)
 
         return when {
@@ -113,7 +119,7 @@ class MigrateApi(
 
             p == "/api/spotify/client-id" -> spotifyClientId(req)
             p == "/api/spotify/oauth/start" -> spotifyStart(req)
-            p == "/api/spotify/callback" -> spotifyCallback(req)
+            p == Pkce.LEGACY_CALLBACK_PATH -> spotifyCallback(req)
             p == "/api/spotify/paste" -> spotifyPaste(req)
             p == "/api/spotify/signout" -> {
                 store.deleteSetting("spotify.session")
@@ -175,7 +181,7 @@ class MigrateApi(
     private fun state(req: Request): Response {
         val q = qobuzSession()
         val sp = spotifySession()
-        val redirect = callbackUrlFrom(req, "/api/spotify/callback")
+        val redirect = callbackUrlFrom(req, Pkce.CALLBACK_PATH)
         val check = Pkce.checkRedirectUri(redirect)
         return Response.json(200, buildString {
             append("{")
@@ -285,7 +291,7 @@ class MigrateApi(
         if (clientId.isEmpty()) {
             return Response.text(400, "Set your Spotify Client ID first.")
         }
-        val redirectUri = callbackUrlFrom(req, "/api/spotify/callback")
+        val redirectUri = callbackUrlFrom(req, Pkce.CALLBACK_PATH)
         val verifier = Pkce.createVerifier()
         val state = Pkce.createState()
         // Stored rather than held in memory so the callback still works if the

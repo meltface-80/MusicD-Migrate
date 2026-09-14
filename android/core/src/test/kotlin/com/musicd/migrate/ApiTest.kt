@@ -70,7 +70,8 @@ class ApiTest {
 
     @Test fun `the redirect URI is derived from the request, and Spotify accepts it`() {
         val j = get(api(), "/api/state").getJSONObject("spotify")
-        assertEquals("http://127.0.0.1:3380/api/spotify/callback", j.getString("redirectUri"))
+        // /login, not /api/spotify/callback — see Pkce.CALLBACK_PATH.
+        assertEquals("http://127.0.0.1:3380/login", j.getString("redirectUri"))
         // On the phone the server is ALWAYS on loopback, which is the one
         // address Spotify accepts over plain http — so the APK never hits the
         // caveat the Docker build has to explain.
@@ -226,4 +227,40 @@ class ApiTest {
         assertEquals("He said \"hi\"", j.getJSONObject("progress").getString("label"))
         assertEquals(3, j.getJSONObject("progress").getJSONObject("counts").getInt("matched"))
     }
+    // ----------------------------------------------------------------------
+    // Regression: Spotify redirects to /login, not /api/spotify/callback. The
+    // shared community Client IDs whitelist exactly that one loopback path,
+    // and anything else is refused with "redirect_uri: Not matching
+    // configuration". The JavaScript twin of these is in
+    // test/unit/server.test.js.
+
+    @Test fun `login is routed, not swallowed by the static fallback`() {
+        // /login is not under /api/, so without an explicit match it would be
+        // looked up as an asset called "login" and 404.
+        val res = raw(api(), "GET", "/login?error=access_denied")
+        assertEquals(200, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("cancelled or refused"))
+    }
+
+    @Test fun `the old callback path is still served`() {
+        val res = raw(api(), "GET", "/api/spotify/callback?error=access_denied")
+        assertEquals(200, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("cancelled or refused"))
+    }
+
+    @Test fun `a sign-in start hands Spotify the login redirect`() {
+        val store = MemoryStore()
+        store.putSetting("spotify.clientId", "a".repeat(32))
+        val res = raw(api(store), "GET", "/api/spotify/oauth/start")
+        assertEquals(302, res.status)
+        val location = res.headers["Location"] ?: ""
+        assertTrue("the authorize URL must carry the /login redirect, url-encoded",
+            location.contains(java.net.URLEncoder.encode(
+                "http://127.0.0.1:3380/login", "UTF-8")))
+        // And the verifier stored for the exchange must name the same URI, or
+        // the token request is rejected for a mismatched redirect_uri.
+        val pending = parseObject(store.setting("spotify.pending")!!)!!
+        assertEquals("http://127.0.0.1:3380/login", pending.str("redirectUri"))
+    }
+
 }

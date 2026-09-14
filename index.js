@@ -64,7 +64,11 @@ app.use(express.json({ limit: "1mb" }));
  * carry a header, and they are useless without the one-time state this process
  * generated moments earlier.
  */
-const OPEN_PATHS = new Set(["/api/qobuz/oauth/callback", "/api/spotify/callback"]);
+const OPEN_PATHS = new Set([
+  "/api/qobuz/oauth/callback",
+  PKCE.CALLBACK_PATH,          // "/login" — what Spotify actually redirects to
+  PKCE.LEGACY_CALLBACK_PATH,   // still served for an already-registered URI
+]);
 app.use((req, res, next) => {
   if (!PIN || OPEN_PATHS.has(req.path)) return next();
   const given = req.get("x-migrate-pin") || (req.query && req.query.pin) || "";
@@ -112,8 +116,8 @@ app.get("/api/state", async (req, res) => {
       signedIn: !!(sp && sp.refreshToken),
       name: (sp && sp.name) || "",
       clientId: store.get("spotify.clientId", ""),
-      redirectUri: PKCE.callbackUrlFrom(req, "/api/spotify/callback"),
-      redirectCheck: PKCE.checkRedirectUri(PKCE.callbackUrlFrom(req, "/api/spotify/callback")),
+      redirectUri: PKCE.callbackUrlFrom(req),
+      redirectCheck: PKCE.checkRedirectUri(PKCE.callbackUrlFrom(req)),
     },
     cacheSize: store.matchCacheSize(),
     job: current ? { id: current.jobId, running: true } : null,
@@ -221,7 +225,19 @@ app.get("/api/spotify/oauth/start", (req, res) => {
     challenge: PKCE.challengeFor(verifier), forceDialog: true }));
 });
 
-app.get("/api/spotify/callback", async (req, res) => {
+/**
+ * Spotify's redirect target.
+ *
+ * Registered at BOTH paths. `/login` is the one advertised and used — it is
+ * the only loopback path the shared community Client IDs whitelist, and
+ * anything else is refused with "redirect_uri: Not matching configuration".
+ * `/api/spotify/callback` stays so a redirect URI registered against
+ * somebody's own app before this change keeps working.
+ *
+ * Declared AFTER express.static, which is fine: static calls next() for a
+ * path it has no file for, and `public/` contains no `login`.
+ */
+async function spotifyCallback(req, res) {
   const parsed = PKCE.parseCallback(req.originalUrl);
   try {
     await finishSpotify(parsed);
@@ -229,7 +245,10 @@ app.get("/api/spotify/callback", async (req, res) => {
   } catch (e) {
     res.send(closingPage("Spotify sign-in failed: " + escapeHtml(e.message)));
   }
-});
+}
+
+app.get(PKCE.CALLBACK_PATH, spotifyCallback);
+app.get(PKCE.LEGACY_CALLBACK_PATH, spotifyCallback);
 
 app.post("/api/spotify/paste", async (req, res) => {
   try {
