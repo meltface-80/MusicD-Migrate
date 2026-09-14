@@ -11,6 +11,13 @@ for f in index.js lib/*.js public/*.js; do
   node --check "$f"
 done
 
+# The app shipped once unable to load its own page, because Android denies
+# cleartext HTTP by default and the whole UI is served over http from
+# 127.0.0.1. Nothing in either test suite can see that — the policy is enforced
+# by the platform — so it is checked here.
+echo "==> android network security config"
+python3 tools/check-android-cleartext.py
+
 echo "==> unit and API tests"
 node --test test/unit/*.test.js
 

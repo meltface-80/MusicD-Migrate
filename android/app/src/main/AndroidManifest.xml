@@ -37,9 +37,21 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+
+        <!--
+          networkSecurityConfig is LOAD-BEARING, not hardening.
+
+          Without it the WebView cannot load this app's own page — Android
+          denies cleartext HTTP by default at targetSdk 28+, and the whole UI is
+          served over plain HTTP from 127.0.0.1 by MigrateService. v0.1.0
+          shipped without it and every launch showed
+          net::ERR_CLEARTEXT_NOT_PERMITTED. See the file for why the exemption
+          is scoped to loopback instead of turned on globally.
+        -->
 
         <!--
           allowBackup is OFF, deliberately.
