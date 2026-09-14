@@ -131,4 +131,59 @@ class ContractTest {
         assertEquals("lib/canon.js and Canon.kt must agree on what an edition suffix is",
             jsWords, Canon.EDITION_WORDS.toSortedSet())
     }
+    /**
+     * Every option the page SENDS to /api/migrate is read by BOTH servers.
+     *
+     * ContractTest already checks that the routes match. It did not check the
+     * FIELDS inside a request body, and CLAUDE.md said to keep those in step by
+     * hand — which is exactly the kind of instruction that holds until it
+     * doesn't.
+     *
+     * The consequence is not cosmetic. If one server misread `dryRun`, a run
+     * the user asked to PREVIEW would write to their library instead, and it
+     * would look like the preview had simply worked. A silently ignored
+     * `strict` would loosen matching without being asked. This is the highest-
+     * consequence wire contract in the app, so it is now a test.
+     *
+     * Subset, not equality: a handler may legitimately read more than the page
+     * sends (both read `concurrency`, which the page leaves to the default).
+     */
+    @Test fun `both servers read every migrate option the page sends`() {
+        val root = repoRoot()
+        assumeTrue("not running from the repository", root != null)
+
+        val appJs = File(root, "public/app.js").readText()
+        val indexJs = File(root, "index.js").readText()
+        val apiKt = File(root, "android/core/src/main/kotlin/com/musicd/migrate/api/" +
+            "MigrateApi.kt").readText()
+
+        // The object literal the page POSTs, and the keys in it.
+        val bodyBlock = Regex("""var body = \{(.*?)\n\s*\};""", RegexOption.DOT_MATCHES_ALL)
+            .find(appJs)?.groupValues?.get(1)
+            ?: throw AssertionError("could not find the /api/migrate body in public/app.js")
+        val sent = Regex("""(?m)^\s+([a-zA-Z]+):""").findAll(bodyBlock)
+            .map { it.groupValues[1] }.toSortedSet()
+
+        assertTrue("the page should send a good few options, found $sent", sent.size >= 8)
+        assertTrue("dryRun is the one that must never be missed", sent.contains("dryRun"))
+
+        // What each server actually reads out of that body.
+        val nodeHandler = Regex("""app\.post\("/api/migrate".*?res\.json\(\{ jobId \}\)""",
+            RegexOption.DOT_MATCHES_ALL).find(indexJs)?.value
+            ?: throw AssertionError("could not find the /api/migrate handler in index.js")
+        val readByNode = Regex("""body\.([a-zA-Z]+)""").findAll(nodeHandler)
+            .map { it.groupValues[1] }.toSortedSet()
+
+        val ktHandler = Regex("""private fun migrate\(req: Request\).*?\n    \}""",
+            RegexOption.DOT_MATCHES_ALL).find(apiKt)?.value
+            ?: throw AssertionError("could not find migrate() in MigrateApi.kt")
+        val readByKt = Regex("""b\.(?:opt|str|intOrNull|optBoolean)[A-Za-z]*\("([a-zA-Z]+)"""")
+            .findAll(ktHandler).map { it.groupValues[1] }.toSortedSet()
+
+        assertEquals("options the page sends that index.js never reads",
+            emptyList<String>(), (sent - readByNode).toList())
+        assertEquals("options the page sends that the APK never reads",
+            emptyList<String>(), (sent - readByKt).toList())
+    }
+
 }

@@ -74,9 +74,32 @@ open class FakeService(
         return catalogue.filter { it.title.contains(title, ignoreCase = true) }
     }
 
+    /**
+     * Album search, modelled on what Spotify ACTUALLY returns: a
+     * SimplifiedAlbumObject, with no external_ids and therefore NO BARCODE.
+     *
+     * An earlier version of this fake handed back the catalogue entry complete
+     * with its upc, so the title path "matched on barcode" under test while
+     * failing against the real service — the fake was hiding the exact bug it
+     * should have exposed. Set [searchAlbumsCarriesUpc] to model a service
+     * whose search does include it.
+     */
+    var searchAlbumsCarriesUpc = false
+
     override fun searchAlbums(title: String, artist: String): List<Album> {
         searchCount.incrementAndGet()
-        return catalogueAlbums.filter { it.title.contains(title, ignoreCase = true) }
+        val hits = catalogueAlbums.filter { it.title.contains(title, ignoreCase = true) }
+        return if (searchAlbumsCarriesUpc) hits else hits.map { it.copy(upc = "") }
+    }
+
+    val upcSearchCount = AtomicInteger(0)
+    var upcSearchFails = false
+
+    override fun searchByUpc(upc: String): List<Album> {
+        upcSearchCount.incrementAndGet()
+        searchCount.incrementAndGet()
+        if (upcSearchFails) throw RuntimeException("barcode search blew up")
+        return catalogueAlbums.filter { it.upc.isNotEmpty() && it.upc == upc }
     }
 
     override fun searchArtists(name: String): List<Artist> {

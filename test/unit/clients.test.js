@@ -216,3 +216,60 @@ test("Qobuz paging stops on a short page", async () => {
   assert.strictEqual(all.length, 2);
   assert.strictEqual(fetch.calls.length, 1);
 });
+
+// --------------------------------------------------------------------------
+// Barcode search. Spotify's album search returns SimplifiedAlbumObject with
+// no external_ids, so a candidate never carries a barcode and the matcher's
+// barcode tier could not fire. The `upc:` filter is the fix, and because the
+// result still has no barcode on it, THE FILTER IS THE EVIDENCE — the code is
+// stamped on so the tier can see it.
+
+test("a Spotify barcode search uses the upc: filter and stamps the result", async () => {
+  const http = fakeFetch([{ status: 200, body: { albums: { items: [
+    { id: "sal", name: "Master of Puppets", total_tracks: 8,
+      artists: [{ name: "Metallica" }] },   // note: NO external_ids, as Spotify sends
+  ] } } }]);
+  const sp = new Spotify(liveSession, { fetch: http });
+  const albums = await sp.searchByUpc("075992736121");
+  assert.match(http.calls[0].url, /q=upc%3A075992736121/);
+  assert.match(http.calls[0].url, /type=album/);
+  assert.strictEqual(albums.length, 1);
+  assert.strictEqual(albums[0].upc, "075992736121",
+    "the searched-for barcode is stamped on, or the matcher's tier cannot fire");
+});
+
+test("a barcode search that returns a crowd is NOT trusted as one", async () => {
+  // A barcode identifies one release. If the filter hands back a pile, it is
+  // not behaving like a filter, and stamping would be a confidently wrong
+  // match — the exact failure this app refuses to make.
+  const many = Array.from({ length: 6 }, (_, i) =>
+    ({ id: "a" + i, name: "Something Else", total_tracks: 9, artists: [{ name: "Nope" }] }));
+  const http = fakeFetch([{ status: 200, body: { albums: { items: many } } }]);
+  const sp = new Spotify(liveSession, { fetch: http });
+  const albums = await sp.searchByUpc("075992736121");
+  assert.strictEqual(albums.length, 6);
+  assert.ok(albums.every((a) => a.upc === ""),
+    "nothing is stamped, so these are judged on title and artist like anything else");
+});
+
+test("an empty barcode makes no request at all", async () => {
+  const http = fakeFetch([{ status: 200, body: {} }]);
+  const sp = new Spotify(liveSession, { fetch: http });
+  assert.deepStrictEqual(await sp.searchByUpc(""), []);
+  assert.deepStrictEqual(await sp.searchByUpc(null), []);
+  assert.strictEqual(http.calls.length, 0);
+});
+
+test("Qobuz searches the barcode as a plain query and needs no stamp", async () => {
+  // Unlike Spotify's, Qobuz's album listings DO carry upc, so the matcher
+  // compares the real codes itself.
+  const http = fakeFetch([{ status: 200, body: { albums: { items: [
+    { id: 7, title: "Master Of Puppets", upc: "075992736121", tracks_count: 8,
+      artist: { name: "Metallica" } },
+  ] } } }]);
+  const qz = new Qobuz({ token: "t" }, { fetch: http });
+  const albums = await qz.searchByUpc("075992736121");
+  assert.match(http.calls[0].url, /query=075992736121/);
+  assert.match(http.calls[0].url, /type=albums/);
+  assert.strictEqual(albums[0].upc, "075992736121", "read from the response, not stamped");
+});

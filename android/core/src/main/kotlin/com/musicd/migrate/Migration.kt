@@ -507,14 +507,14 @@ class Migration(
                    else Resolved(null, null, c.method)
         }
 
-        searches.incrementAndGet()
-        val cands = safely {
-            target.searchAlbums(Canon.stripVersion(a.title), a.artists.firstOrNull() ?: "")
-        } ?: emptyList()
-
-        // The barcode is the album's ISRC and is worth a request to get:
-        // Spotify's search results carry it, Qobuz's usually do, and when
-        // neither side has one the title tier still runs.
+        // The barcode first, exactly as a track's ISRC goes first.
+        //
+        // Fetched BEFORE searching, not after: an earlier version searched by
+        // title and only then looked the barcode up, so the barcode was never
+        // used to search for anything. Combined with Spotify's album search
+        // returning no barcodes at all (SpotifyClient.searchByUpc), the whole
+        // barcode tier was dead and every album fell through to the title
+        // tiers — 114 of 195 albums reported "not found" on a real library.
         var want = a
         if (a.upc.isEmpty()) {
             safely { source.albumDetail(a.id) }?.let { d ->
@@ -522,7 +522,26 @@ class Migration(
             }
         }
 
-        val r = Match.matchAlbum(cands, want, options.strict)
+        var r: Match.Result? = null
+        if (want.upc.isNotEmpty()) {
+            searches.incrementAndGet()
+            val byUpc = safely { target.searchByUpc(want.upc) } ?: emptyList()
+            r = Match.matchAlbum(byUpc, want, options.strict)
+        }
+
+        // No barcode, or the barcode found nothing: fall back to title and
+        // artist with the edition suffix removed, so "Master Of Puppets
+        // (Remastered)" searches for what Spotify calls "Master of Puppets".
+        if ((r == null || !r.matched) && !options.strict) {
+            searches.incrementAndGet()
+            val cands = safely {
+                target.searchAlbums(Canon.stripVersion(a.title), a.artists.firstOrNull() ?: "")
+            } ?: emptyList()
+            val r2 = Match.matchAlbum(cands, want, options.strict)
+            // Keep whichever matched, else the more informative refusal.
+            r = if (r2.matched) r2 else (if (r?.matched == true) r else r2)
+        }
+        if (r == null) r = Match.matchAlbum(emptyList(), want, options.strict)
         val id = r.album?.id
         store.cacheMatch(sourceName, a.id, targetName, "album", id,
             if (id != null) r.method ?: "" else r.reason)

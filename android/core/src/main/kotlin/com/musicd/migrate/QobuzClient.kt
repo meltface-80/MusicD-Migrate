@@ -267,6 +267,22 @@ class QobuzClient(
             "type" to "tracks", "limit" to 12)), "tracks")
             .mapNotNull { toQobuzTrack(it, null) }
 
+    /**
+     * Albums by barcode. Same caveat as [searchByIsrc]: Qobuz has no
+     * documented barcode filter but does index the code.
+     *
+     * No stamping needed on this side — unlike Spotify's, Qobuz's album
+     * listings DO carry `upc`, so Match compares the real codes itself and a
+     * near-miss costs one wasted request rather than a wrong match.
+     */
+    override fun searchByUpc(upc: String): List<Album> {
+        val code = upc.trim()
+        if (code.isEmpty()) return emptyList()
+        return section(request("catalog/search",
+            mapOf("query" to code, "type" to "albums", "limit" to 10)), "albums")
+            .mapNotNull { toQobuzAlbum(it) }
+    }
+
     override fun searchAlbums(title: String, artist: String): List<Album> =
         section(request("catalog/search", mapOf(
             "query" to listOf(title, artist).filter { it.isNotEmpty() }.joinToString(" "),
