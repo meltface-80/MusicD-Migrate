@@ -1,0 +1,248 @@
+name: CI
+
+# Both halves of the repository are checked on every push, and they are checked
+# TOGETHER: the contract tests in :core read index.js and public/app.js from the
+# working tree, so a route added on one side and not the other fails here rather
+# than on somebody's phone.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  node:
+    name: Server and page
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install --no-audit --no-fund
+
+      # node --check on every source file, then the unit and API suites. None
+      # of it needs a Qobuz or Spotify account: the clients are driven by a
+      # fake fetch and the engine by fake services with the same interface.
+      - name: Run the test suite
+        run: npm test
+
+      # The front-end is JavaScript with no build step, so nothing else would
+      # notice a call to something that no longer exists. `node --check` cannot
+      # see it — it parses, it does not resolve names — and no-undef can.
+      # The config is committed at tools/eslint.config.mjs rather than written
+      # here: an ESLint flat config resolves its own imports relative to
+      # ITSELF, so one written into /tmp cannot find anything in the project's
+      # node_modules. The committed one imports nothing at all, which sidesteps
+      # that entirely.
+      - name: Lint the page for undefined references
+        run: |
+          npm install --no-save --silent eslint@9
+          npx eslint --config tools/eslint.config.mjs public/app.js
+
+      # The icons are generated, not checked in as art — so the committed PNGs
+      # must be what the generator produces. A hand-edited icon would be undone
+      # by the next run of the tool without this.
+      - name: Check the icons match their generator
+        run: |
+          node tools/make-icons.js
+          git diff --exit-code -- public/icons/ \
+            || (echo "::error::public/icons/ differs from tools/make-icons.js output" && exit 1)
+
+  core:
+    name: Core tests (JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The matching, both API clients, the migration engine and the whole
+      # route table live in :core, which is a plain Kotlin/JVM module — so the
+      # part of the app most worth testing is tested without an emulator or an
+      # Android SDK. ContractTest is in here too, and it is why this job checks
+      # out the whole repository rather than just android/.
+      - name: Run the core test suite
+        working-directory: android
+        run: ./gradlew :core:test --no-daemon --stacktrace
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: android/core/build/reports/tests/test
+
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    needs: [node, core]
+    # A build that hangs must fail with logs rather than sit until the six-hour
+    # default expires: the logs are only retrievable once the job ends.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Installed here, where the download is visible in the log, rather than
+      # leaving Gradle to fetch it mid-task where a stall looks identical to a
+      # slow compile.
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'tools platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The signing key, from a repository secret.
+      #
+      # It has to be the SAME key every build or Android will not install the
+      # result over the copy already on the phone — a debug key is generated
+      # per machine, so every runner would produce a different certificate and
+      # every "update" would be refused.
+      #
+      # A missing secret is NOT a broken build and must not be reported as one.
+      # Without the key the APK still compiles and every check still runs; the
+      # only thing that cannot happen is PUBLISHING, because an unsigned APK
+      # installs nowhere. So this records whether the key is available, the
+      # publish step requires it, and the job starts publishing by itself once
+      # the secret exists.
+      - name: Restore the signing key
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MUSICD_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::MUSICD_KEYSTORE_BASE64 is not set, so this build is" \
+                 "unsigned and will not be published to dist/. Everything else ran." \
+                 "See the Signing section of the README."
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/musicd-release.jks"
+          echo "path=$RUNNER_TEMP/musicd-release.jks" >> "$GITHUB_OUTPUT"
+          echo "have_key=true" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble the release APK
+        timeout-minutes: 25
+        working-directory: android
+        env:
+          MUSICD_KEYSTORE: ${{ steps.signing.outputs.path }}
+          MUSICD_KEYSTORE_PASSWORD: ${{ secrets.MUSICD_KEYSTORE_PASSWORD }}
+          MUSICD_KEY_ALIAS: musicd
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      # The APK is evidence and can be inspected without a device. The page
+      # inside it must be the repository's public/ byte for byte — if the
+      # staging task ever silently stops running, the APK would ship an old UI
+      # and nothing else would notice.
+      - name: Check the bundled page is this repository's public/
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          mkdir -p /tmp/apkweb
+          for f in index.html app.js style.css manifest.json; do
+            unzip -p "$apk" "assets/web/$f" > "/tmp/apkweb/$f"
+            cmp "/tmp/apkweb/$f" "public/$f" \
+              || (echo "::error::assets/web/$f in the APK differs from public/$f" && exit 1)
+          done
+          echo "the APK ships public/ unchanged"
+
+      - name: Name the artifact after the version
+        id: name
+        env:
+          HAVE_KEY: ${{ steps.signing.outputs.have_key }}
+        run: |
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          version=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)
+          # An unsigned build is NAMED as such. Someone downloading a CI
+          # artifact should not get a file that looks like a release and cannot
+          # install.
+          if [ "$HAVE_KEY" = "true" ]; then
+            out="musicd-migrate-${version}.apk"
+          else
+            out="musicd-migrate-${version}-UNSIGNED.apk"
+          fi
+          cp "$apk" "$out"
+          echo "apk=$out" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.apk }}
+          path: ${{ steps.name.outputs.apk }}
+
+      # Keep a directly downloadable APK in the repository so the README can
+      # link straight at it and sideloading is one tap rather than a trip
+      # through the Actions UI.
+      #
+      # Committed once per versionName, not once per push: an APK is a build
+      # output and git keeps every copy forever. Bumping versionName in
+      # android/app/build.gradle.kts is what publishes a new one.
+      #
+      # This pushes with GITHUB_TOKEN, and GitHub deliberately does not fire
+      # workflows for pushes made with it — so this cannot start a build loop.
+      - name: Publish the APK into dist/
+        if: >-
+          github.event_name == 'push' && github.ref_type == 'branch'
+          && steps.signing.outputs.have_key == 'true'
+        env:
+          APK: ${{ steps.name.outputs.apk }}
+          VERSION: ${{ steps.name.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -f "dist/$APK" ]; then
+            echo "dist/$APK is already committed — nothing to publish."
+            exit 0
+          fi
+          # One APK in the tree at a time. `git rm` of the last file in a
+          # directory removes the directory too, so the mkdir comes AFTER it.
+          git rm -q --ignore-unmatch 'dist/musicd-migrate-*.apk'
+          mkdir -p dist
+          cp "$APK" "dist/$APK"
+          sha=$(sha256sum "$APK" | cut -d' ' -f1)
+          cat > dist/latest.json <<JSON
+          {
+            "version": "$VERSION",
+            "url": "https://github.com/${GITHUB_REPOSITORY}/raw/main/dist/$APK",
+            "sha256": "$sha",
+            "notes": "Built from ${GITHUB_SHA}."
+          }
+          JSON
+          sed -i 's/^          //' dist/latest.json
+          # The README's download link is rewritten here rather than by hand,
+          # because a link that has to be remembered eventually points at a
+          # version that no longer exists. Every mention, not just the path:
+          # the link TEXT names the version too, and a label that disagrees
+          # with what it downloads is worse than no label.
+          sed -i -E "s#musicd-migrate-[0-9][0-9A-Za-z._-]*\.apk#$APK#g" README.md
+          git add "dist/$APK" dist/latest.json README.md
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish $APK" -m "Built from ${GITHUB_SHA}."
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: Attach the APK to a tagged release
+        if: >-
+          startsWith(github.ref, 'refs/tags/v')
+          && steps.signing.outputs.have_key == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.name.outputs.apk }}

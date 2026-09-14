@@ -1,6 +1,19 @@
+# What the running server does not need. Keeping these out is not only about
+# size: `COPY . .` into an image that then gets published is the easiest way to
+# ship something nobody meant to.
 node_modules
 data
 .git
-android/build
-android/*/build
-android/.gradle
+.github
+
+# The Android half. It shares public/ with the server, but nothing in android/
+# runs in the container — it is a Gradle project, a wrapper jar and Kotlin
+# sources.
+android
+
+# Build outputs and developer tooling.
+dist
+test
+tools
+*.log
+.env

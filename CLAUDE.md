@@ -1,0 +1,227 @@
+# Working on this repository
+
+## The rule
+
+**Do not ship a change you have not tested. If you cannot test it, say so in
+the same breath as you hand it over.**
+
+Compiling is not evidence. `node --check` is not evidence either — it parses a
+file, it does not resolve names, and a front-end with no build step will
+happily ship a call to a function that no longer exists.
+
+## What "tested" means here, concretely
+
+Run all of these before pushing. None is optional, and none needs a Qobuz or
+Spotify account.
+
+```bash
+npm test                                                  # 82 tests
+npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
+node tools/make-icons.js && git diff --exit-code public/icons/
+cd android && ./gradlew :core:test                         # 99 tests
+```
+
+The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
+
+```bash
+cd android && ANDROID_HOME=/path/to/sdk ./gradlew :app:assembleRelease
+```
+
+**A new test must fail before the fix and pass after it.** Prove it: break the
+fix, run the test, show it failing, restore. A test that passes both ways is
+decoration.
+
+That is not a slogan here — it has already earned its keep. Teaching
+`lib/canon.js` that `"live"` is an edition word makes exactly one test fail, and
+it is the one that matters. Two real bugs in this repository were found by
+mutating a passing suite rather than by reading the code.
+
+## THE THING THIS REPOSITORY IS FOR
+
+One decision is load-bearing above everything else: **when is a track on one
+service the same recording as a track on the other.**
+
+It is the only code here that can be wrong in a way nobody notices. A failed
+migration is obvious and recoverable. A migration that quietly put the karaoke
+version, the radio edit or a covers band into somebody's playlist **looks like
+it worked**, and they find out months later with a playlist they can no longer
+trust.
+
+So the rule, in `lib/match.js` and `Match.kt` alike:
+
+> **Where the evidence is not decisive, match nothing — and report why.**
+
+Concretely, and do not relax any of these without a very good argument:
+
+- **There is no "best guess" tier.** ISRC; or title+artist+duration; or
+  title-without-edition-suffix+artist+tighter-duration. Below that, nothing.
+- **An edition suffix is strippable. A different performance is not.**
+  `(Remastered)` is the same performance. `(Live)`, `(Acoustic)`,
+  `(Radio Edit)`, `(Someone Remix)`, `- Extended Mix`, `(Demo)` are not, and
+  must never be added to `EDITION_WORDS`. `ContractTest` checks the two lists
+  agree; nothing checks that a wrong word was not added to *both*.
+- **No duration means no title-tier match.** Title and artist alone are exactly
+  the two facts a cover, a re-recording and a live take also satisfy.
+- **A missing ISRC is missing data, not evidence.** It falls through to the
+  title tiers; it never counts against a candidate.
+- **Every refusal carries a reason, and the reasons are different on purpose.**
+  "The title is there and the length is wrong" means the user owns a different
+  edition and can fix it by hand. "Nothing called that" means it is not there.
+  Collapsing both into "not found" throws away the difference, and the
+  unmatched report is the actual deliverable of a migration.
+
+## Two halves, one front-end
+
+`public/` is served by the Docker build (`index.js`) **and bundled unchanged
+into the APK**, where a Kotlin reimplementation answers the same routes.
+
+**The bundled page is the authority on every API field name** — not `index.js`
+and not `MigrateApi.kt`. MusicD Remote Lite collected eleven wire-contract bugs
+from porting a server's names rather than reading what the page actually calls.
+
+So: **anything added to one server must be added to the other, and the page's
+spelling wins.** A mismatch breaks the APK and *nothing in the Docker build
+would notice*, because the container is the half everyone tests.
+
+`ContractTest.kt` catches three classes of that automatically — a route the
+page calls that one server does not serve, the two edition-word lists
+disagreeing, and `optString` escaping `Json.kt`. It does not catch a renamed
+JSON *field*. `ApiTest.kt` and `test/unit/server.test.js` assert the field
+names both sides emit; keep them in step by hand.
+
+`public/` has no build step and must not acquire one. The APK bundles the
+directory as-is.
+
+## Things about this codebase that are easy to get wrong
+
+- **Qobuz counts durations in SECONDS.** Spotify's `duration_ms` is
+  milliseconds. The conversion happens once, in `toTrack`/`toQobuzTrack`, and
+  nowhere else. A matcher comparing 213 against 213000 rejects every track in
+  the library and looks exactly like "nothing is on Qobuz".
+- **Qobuz puts the edition in a separate `version` field.** Title "Blue Monday"
+  + version "2016 Remaster" against Spotify's one string. Recomposed in the
+  same two functions, so `stripVersion` sees the same thing from both sides.
+- **`optString` is unsafe.** Android's `org.json` returns the literal string
+  `"null"` for a JSON null; the desktop one returns `""`. Every JVM test is
+  blind to the difference. Use `str()` / `strOrNull()` from `Json.kt`.
+- **`[hidden]` loses to any author rule that sets `display`.** `button, .btn {
+  display: inline-block }` made both "Sign out" buttons visible while signed
+  out, while the JavaScript set `.hidden = true` faithfully. `style.css` now
+  has `[hidden] { display: none !important }`; do not remove it, and toggle
+  visibility with `el.hidden`, never `style.display`.
+- **Batch every write, and count a failed batch as all of it.** The endpoint
+  maxima are 100 (Spotify playlist tracks) and 50 (everything else, both
+  services). A failed batch of fifty is one report row but *fifty* stranded
+  items — counting it as one understated the damage by forty-nine, which is a
+  bug that shipped here once.
+- **Obey 429 with the delay the service asked for.** Spotify sends
+  `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
+  cascade. Qobuz sends nothing, so it backs off exponentially.
+- **Cache the misses.** A cached "we looked and found nothing" is a real
+  answer. Treating it as "we have not looked" makes every re-run pay again for
+  exactly the tracks that are slowest, because a miss costs the full fallback
+  search.
+- **Playlist order is a promise.** Lookups run concurrently; results are
+  written into a slot by index and read back in order. Pushing as they land
+  shuffles every playlist into completion order. The *report* rows are not
+  ordered — they are recorded as workers finish — so never assert on
+  `items[0]` / `items[1]` in a test.
+- **`safely()` wraps searches and nothing else.** A search that fails costs one
+  track. A read or a write that fails means something is actually wrong.
+  `AuthError` is re-thrown through it: a dead sign-in must stop the run, not be
+  reported as four thousand misses.
+- **The APK's server binds loopback and has no switch to widen it.** Two
+  services' access tokens and write access to somebody's library are behind it.
+  Do not add a LAN option. In Docker the bind is necessarily wide (that is how
+  a published port works); `MIGRATE_PIN` gates every route *including the static
+  page*, and the only exceptions are the two OAuth callbacks, which cannot
+  carry a header. **Do not add a per-route bypass.**
+- **Sign-ins open in a real browser on Android, never the WebView.** A WebView
+  does not share the browser's cookies, so signing in there means typing a
+  password into a window this app controls — the thing the redirect flow exists
+  to avoid — and providers may refuse embedded WebViews outright.
+- **Spotify rotates refresh tokens.** A refresh may return a new one, and the
+  old one then stops working. Persist on every refresh (`onTokens`), or a
+  long-lived install loses its sign-in with no way back.
+- **A Qobuz `user_auth_token` belongs to the app that minted it.** The `app_id`
+  and the token move together; presenting a mismatched pair is a 401 that reads
+  exactly like an expired sign-in.
+- **Guard CSV cells that start with `=`, `+`, `-` or `@`.** A spreadsheet
+  executes them as formulas, and track titles beginning with `-` are not rare.
+  Both `index.js` and `MigrateApi.kt` prefix an apostrophe.
+
+## Errors must be loud enough to notice
+
+`try { … } catch (e) {}` around something the app depends on is how features
+fail invisibly for releases at a time. When guarding something genuinely
+optional, make sure the app really works without it — and do not let unrelated
+features depend on the thing being guarded. Every deliberate empty catch in
+this repository carries a comment saying why.
+
+## The honesty rule about Android code
+
+`:core` is a plain Kotlin/JVM module and is properly tested — the matching,
+both API clients, the migration engine, the HTTP server and the whole route
+table, including over a real socket.
+
+`app/src/main/kotlin/` has **nothing but the compiler**. There are no
+instrumentation tests and no device. So for anything in there, state plainly
+what was verified and what was not. "Compiles and the core tests pass" is an
+honest claim. "Fixed" is not, unless someone has run it on a phone.
+
+**Push logic down into `:core` wherever it can go** — that is the only place
+with tests.
+
+The APK is still evidence and can be inspected without a device. Do it when a
+change touches the manifest, resources or the bundled page:
+
+```bash
+apkanalyzer manifest print <apk>            # is the component really declared?
+unzip -p <apk> assets/web/app.js | cmp - public/app.js
+```
+
+"The string is in the file" and "the component is declared with the right
+intent-filter" are different claims.
+
+## Qobuz, and being straight about it
+
+The Qobuz API is unofficial and using it is against Qobuz's terms of service.
+That is stated in `lib/qobuz.js`, in `QobuzClient.kt`, in the README above the
+install instructions, and in the footer of the page itself — **where someone
+reads it before installing rather than after.** Keep it that way. Do not
+soften it, and do not move it somewhere less visible.
+
+Do not add anything that fetches audio. Nothing in a migration needs it, and
+shipping the machinery for it would invite the question of why it exists.
+`MusicD-Remote` has that code (`lib/qobuz-sig.js`) and it is deliberately not
+ported here.
+
+## Ported files
+
+- `lib/qobuz-oauth.js` — from `meltface-80/MusicD-Remote`, unchanged apart from
+  its header comment.
+- `android/core/…/http/HttpServer.kt` — adapted from
+  `meltface-80/Android-Random-Remote`. The hard-won details are load-bearing:
+  `SO_REUSEADDR` before the bind, the insistent retry on the requested port,
+  keep-alive, and `shutdown()` rather than `shutdownNow()` so the worker doing
+  the shutting down is not interrupted.
+
+Unlike MusicD Remote Lite's dial, these are **not** kept in sync by a tool —
+they were taken once and are ours now. Fix them here.
+
+## Scope and process
+
+- Develop on the branch named in the task. Never push to another branch.
+- Do not open a pull request unless asked.
+- Bump `version` in `package.json` for a server release, and **both**
+  `versionName` and `versionCode` in `android/app/build.gradle.kts` for any APK
+  meant to be installed — Android refuses to install over an equal or higher
+  `versionCode`. The workflow publishes `dist/` and rewrites the README's
+  download link from `versionName`.
+- The icons are generated by `tools/make-icons.js`, not checked in as art. Edit
+  the generator and re-run it; CI fails if the committed PNGs differ.
+- The signing keystore is private key material. It lives in CI secrets. Do not
+  commit it, and do not change the key: an APK signed with a different one
+  cannot install over the existing app.
+- Ask before guessing when a choice is the user's to make. A destructive
+  default, a corner, a layout — ask, do not assume and apologise later.
