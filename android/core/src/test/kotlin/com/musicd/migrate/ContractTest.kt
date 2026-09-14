@@ -186,4 +186,57 @@ class ContractTest {
             emptyList<String>(), (sent - readByKt).toList())
     }
 
+    /**
+     * The read/write split is the same split on both sides.
+     *
+     * MusicSource and MusicTarget in Model.kt, and SOURCE_METHODS and
+     * TARGET_METHODS in lib/service.js, are the same two lists written twice.
+     * They decide one thing: whether a service can be migrated INTO. Roon
+     * cannot — a Roon library is files on a disk — and the consequence of one
+     * side thinking otherwise is not a crash, it is a run that reports every
+     * album as not found, because a failed search is deliberately counted as
+     * one unmatched item rather than an error.
+     *
+     * So the lists are compared, exactly as the edition words are.
+     */
+    @Test fun `the source and target method lists match the JavaScript ones`() {
+        val root = repoRoot()
+        assumeTrue("not running from the repository", root != null)
+        val modelKt = File(root, "android/core/src/main/kotlin/com/musicd/migrate/Model.kt")
+            .readText()
+        val serviceJs = File(root, "lib/service.js").readText()
+
+        fun ktBody(name: String): String =
+            Regex("""interface $name[^{]*\{(.*?)\n\}""", RegexOption.DOT_MATCHES_ALL)
+                .find(modelKt)?.groupValues?.get(1)
+                ?: throw AssertionError("could not find interface $name in Model.kt")
+
+        fun funs(body: String) = Regex("""(?m)^\s+fun ([A-Za-z]+)\(""")
+            .findAll(body).map { it.groupValues[1] }.toSortedSet()
+
+        fun jsList(name: String): Set<String> {
+            val block = Regex("""const $name = [^;]*?\[(.*?)]""", RegexOption.DOT_MATCHES_ALL)
+                .find(serviceJs)?.groupValues?.get(1)
+                ?: throw AssertionError("could not find $name in lib/service.js")
+            return Regex(""""([A-Za-z]+)"""").findAll(block)
+                .map { it.groupValues[1] }.toSortedSet()
+        }
+
+        val ktSource = funs(ktBody("MusicSource"))
+        val ktTarget = funs(ktBody("MusicTarget"))
+
+        assertTrue("MusicSource should declare a handful of reads, found $ktSource",
+            ktSource.size >= 6)
+        assertTrue("MusicTarget should declare the searches and the writes, found $ktTarget",
+            ktTarget.size >= 9)
+
+        assertEquals("MusicSource and SOURCE_METHODS in lib/service.js must agree",
+            jsList("SOURCE_METHODS"), ktSource)
+        // TARGET_METHODS is SOURCE_METHODS plus the rest, and MusicTarget
+        // inherits MusicSource, so the union is what has to match.
+        assertEquals("MusicTarget and TARGET_METHODS in lib/service.js must agree",
+            jsList("SOURCE_METHODS") + jsList("TARGET_METHODS"),
+            (ktSource + ktTarget).toSortedSet())
+    }
+
 }

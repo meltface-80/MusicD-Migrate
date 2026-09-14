@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * fails.
  *
  * ONE CODE PATH, BOTH DIRECTIONS. This class never asks which service it is
- * talking to: SpotifyClient and QobuzClient both implement MusicService, so
+ * talking to: SpotifyClient and QobuzClient both implement MusicTarget, so
  * "Qobuz to Spotify" and "Spotify to Qobuz" are the same run with the two
  * swapped.
  *
@@ -73,8 +73,9 @@ data class Progress(
 }
 
 class Migration(
-    private val source: MusicService,
-    private val target: MusicService,
+    /** Read-only is enough for a source; Roon is one. See Model.kt. */
+    private val source: MusicSource,
+    private val target: MusicTarget,
     private val store: Store,
     private val jobId: String,
     private val options: MigrationOptions

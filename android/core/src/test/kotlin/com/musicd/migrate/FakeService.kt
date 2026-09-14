@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * A stand-in for a service client.
  *
- * It implements MusicService exactly as SpotifyClient and QobuzClient do,
+ * It implements MusicTarget exactly as SpotifyClient and QobuzClient do,
  * which is the point: Migration cannot tell them apart, and neither can this.
  * The JavaScript suite has the same fake in test/unit/migrate.test.js.
  */
@@ -18,7 +18,7 @@ open class FakeService(
     var libAlbums: MutableList<Album> = ArrayList(),
     var libArtists: MutableList<Artist> = ArrayList(),
     var libPlaylists: LinkedHashMap<String, Pair<String, MutableList<Track>>> = LinkedHashMap()
-) : MusicService {
+) : MusicTarget {
 
     override var accountId: String = "me"
 

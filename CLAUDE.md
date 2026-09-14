@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 85 tests
+npm test                                                  # 103 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 102 tests
+cd android && ./gradlew :core:test                         # 117 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -83,17 +83,30 @@ So: **anything added to one server must be added to the other, and the page's
 spelling wins.** A mismatch breaks the APK and *nothing in the Docker build
 would notice*, because the container is the half everyone tests.
 
-`ContractTest.kt` catches three classes of that automatically — a route the
-page calls that one server does not serve, the two edition-word lists
-disagreeing, and `optString` escaping `Json.kt`. It does not catch a renamed
-JSON *field*. `ApiTest.kt` and `test/unit/server.test.js` assert the field
-names both sides emit; keep them in step by hand.
+`ContractTest.kt` catches five classes of that automatically — a route the
+page calls that one server does not serve, an option the page sends that one
+server never reads, the two edition-word lists disagreeing, the read/write
+method lists disagreeing, and `optString` escaping `Json.kt`. It does not catch
+a renamed JSON *field*. `ApiTest.kt` and `test/unit/server.test.js` assert the
+field names both sides emit; keep them in step by hand.
+
+Those tests read files outside `:core`, so `core/build.gradle.kts` declares
+them as task inputs. Without that Gradle reports `:core:test` up to date after
+a change to the JavaScript half alone — which is the one case the contract
+tests exist for.
 
 `public/` has no build step and must not acquire one. The APK bundles the
 directory as-is.
 
 ## Things about this codebase that are easy to get wrong
 
+- **A service is either readable or readable-and-writable.** `MusicSource` is
+  the reading half and `MusicTarget` adds the searches and the writes;
+  `lib/service.js` says the same in the only way JavaScript can, as a list of
+  method names and a check that throws. Roon is a source and can never be a
+  target — a Roon library is files on a disk. Get that wrong and the failure is
+  not a crash: `safely()` turns a failed search into one unmatched item on
+  purpose, so a whole run would report every album as "not found".
 - **Qobuz counts durations in SECONDS.** Spotify's `duration_ms` is
   milliseconds. The conversion happens once, in `toTrack`/`toQobuzTrack`, and
   nowhere else. A matcher comparing 213 against 213000 rejects every track in

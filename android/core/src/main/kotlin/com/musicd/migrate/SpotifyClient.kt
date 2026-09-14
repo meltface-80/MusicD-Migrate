@@ -30,7 +30,7 @@ class SpotifyClient(
     private val onTokens: (SpotifySession) -> Unit = {},
     private val onRateLimit: (Long) -> Unit = {},
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) }
-) : MusicService {
+) : MusicTarget {
 
     override val serviceName = "spotify"
     override val accountId: String get() = session.userId

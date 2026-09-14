@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { Migration } = require("../../lib/migrate");
 const storeMod = require("../../lib/store");
+const { SOURCE_METHODS } = require("../../lib/service");
 
 function tmpStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mdm-"));
@@ -29,6 +30,7 @@ class FakeService {
     this.written = { tracks: [], albums: [], artists: [], created: [], added: {} };
     this.searchCount = 0;
   }
+  async me() { this.meCalls = (this.meCalls || 0) + 1; return { id: this.userId, name: this.name }; }
   async savedTracks() { return this.lib.tracks.slice(); }
   async savedAlbums() { return this.lib.albums.slice(); }
   async followedArtists() { return this.lib.artists.slice(); }
@@ -519,4 +521,62 @@ test("strict mode still accepts only the barcode for albums", async () => {
   const { result } = await run(source, target,
     Object.assign({}, NOTHING, { albums: true, strict: true }));
   assert.strictEqual(result.counts.unmatched, 1, "no barcode, no match under strict");
+});
+
+// --------------------------------------------------------------------------
+// A service that can only be READ.
+//
+// Roon is the reason this distinction exists: a Roon library is somebody's own
+// files, reached through the browse API, and there is no way to put an album
+// INTO it. So a Roon client implements the reading half of lib/service.js and
+// nothing else — and the engine has to say so out loud rather than discover it
+// as a TypeError four layers down, inside safely(), where a failed search is
+// deliberately reported as one unmatched track. Getting that wrong would turn
+// "you pointed this the wrong way round" into "none of your ten thousand
+// albums is on Spotify".
+
+/** The shape of a read-only client: every source method, no write methods. */
+function readOnlyService() {
+  const o = { userId: "core" };
+  for (const m of SOURCE_METHODS) {
+    o[m] = async () => (m === "albumDetail" || m === "me" ? null : []);
+  }
+  return o;
+}
+
+function build(source, target, names) {
+  const s = tmpStore();
+  s.createJob("job1", "a->b", {}, true);
+  return new Migration(Object.assign({ source, target, store: s, jobId: "job1",
+    options: NOTHING }, names || {}));
+}
+
+test("a read-only service is refused as a migration target, by name", () => {
+  assert.throws(
+    () => build(readOnlyService(), readOnlyService(),
+                { sourceName: "roon", targetName: "roon" }),
+    (e) => /roon cannot be migrated into/.test(e.message) &&
+           /saveTracks/.test(e.message),
+    "the refusal has to name the service and what it cannot do");
+});
+
+test("a read-only service is accepted as a migration source", () => {
+  const target = new FakeService("s", {});
+  assert.doesNotThrow(() => build(readOnlyService(), target,
+    { sourceName: "roon", targetName: "spotify" }));
+});
+
+test("a target missing one single write method is still refused", () => {
+  const target = new FakeService("s", {});
+  // Own property, shadowing the prototype's: as a client whose author added
+  // nine of the ten methods.
+  const crippled = Object.assign(Object.create(target), { followArtists: undefined });
+  assert.throws(() => build(new FakeService("q", {}), crippled,
+    { sourceName: "qobuz", targetName: "spotify" }),
+    /missing followArtists/);
+});
+
+test("a target that cannot even be read from is refused as a source", () => {
+  assert.throws(() => build({}, new FakeService("s", {}), { sourceName: "nothing" }),
+    /nothing cannot be read from/);
 });

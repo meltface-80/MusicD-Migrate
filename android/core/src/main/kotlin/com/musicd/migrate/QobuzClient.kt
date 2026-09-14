@@ -38,7 +38,7 @@ class QobuzClient(
     private val http: Http = UrlConnectionHttp(),
     private val onRateLimit: (Long) -> Unit = {},
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) }
-) : MusicService {
+) : MusicTarget {
 
     override val serviceName = "qobuz"
     override val accountId: String get() = session.userId
