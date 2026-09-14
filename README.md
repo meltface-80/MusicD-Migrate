@@ -159,20 +159,17 @@ scratch on the next run.
 
 ## Install: Android
 
-Grab the APK and open it — Android will ask you to allow installing from that
+**Download: [`dist/musicd-migrate-0.1.0.apk`](dist/musicd-migrate-0.1.0.apk)**
+— open it on the phone and Android will ask you to allow installing from that
 source once.
 
-The `apk` job in CI publishes a signed build into [`dist/`](dist/) and rewrites
-the link here to match, but **only once a signing keystore exists in the
-repository secrets** (`MUSICD_KEYSTORE_BASE64`, `MUSICD_KEYSTORE_PASSWORD`).
-Until then `dist/` is empty and every build is unsigned — an unsigned APK
-installs nowhere, so publishing one would put a broken link here. In the
-meantime: build it yourself (below), or download the artifact from the Actions
-run, which is named `…-UNSIGNED.apk` precisely so it is not mistaken for a
-release.
+`dist/latest.json` carries the version and the APK's SHA-256 if you want to
+check the download.
 
-The key has to be the **same** every build, or Android refuses to install the
-result over the copy already on the phone.
+From here on the `apk` job in CI rebuilds and republishes that file whenever
+`versionName` is bumped, signed with the same key, so updates install over the
+top. That needs the keystore in the repository secrets — see
+[Signing the APK](#signing-the-apk).
 
 Nothing else is needed — no Docker, no server, no companion anything. The app
 runs its own HTTP server on `127.0.0.1` and shows the page in a WebView.
@@ -210,17 +207,40 @@ uninstall first.
 
 ## Signing the APK
 
-**This is why `dist/` is empty.** Android refuses to install an unsigned APK,
-so publishing one would put a file in `dist/` that the README links to and
-nobody can use. The `apk` job therefore builds and checks everything, warns,
-and skips only the publish — and it starts publishing by itself the moment the
-key exists. Nothing else needs changing.
+Android refuses to install an unsigned APK, so CI will not publish one: the
+`apk` job builds and checks everything, warns, and skips only the publish until
+a key is available.
 
-It has to be the **same key every build**, or Android refuses to install the
-new APK over the copy already on the phone. That is the whole reason this is a
-stored secret rather than a key generated per run.
+**The key for this project already exists.** `dist/musicd-migrate-0.1.0.apk`
+is signed with it, and its fingerprint is pinned in
+`tools/release-key.sha256`. Every later build has to use the **same** key or
+Android will refuse to install it over the copy already on the phone — that is
+the whole reason this is a stored secret rather than a key made per run.
 
-Make one, once:
+To let CI take over the publishing, add the keystore you were given as two
+repository secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `MUSICD_KEYSTORE_BASE64` | the base64 blob from above |
+| `MUSICD_KEYSTORE_PASSWORD` | the password you chose |
+
+The alias is `musicd`, which the workflow passes as `MUSICD_KEY_ALIAS`.
+
+To get the base64 blob from the keystore file:
+
+```bash
+base64 -w0 musicd-release.jks     # macOS: base64 -i musicd-release.jks
+```
+
+With those two secrets set, bumping `versionName` and `versionCode` in
+`android/app/build.gradle.kts` is all it takes: CI builds, checks the signature
+against the pinned fingerprint, writes the APK and `dist/latest.json`, and
+rewrites the download link in this README.
+
+### Starting over with a new key
+
+Only if the keystore is lost. Make one with:
 
 ```bash
 keytool -genkeypair -v \
@@ -231,46 +251,31 @@ keytool -genkeypair -v \
   -dname "CN=MusicD Migrate"
 ```
 
-It asks for a password twice. Then:
+Then delete `tools/release-key.sha256` (or replace it with the new
+fingerprint), and understand that **everyone with the old APK installed has to
+uninstall before they can install the new one** — Android treats a changed
+signing certificate as a different app.
 
-```bash
-base64 -w0 musicd-release.jks     # macOS: base64 -i musicd-release.jks
-```
-
-Add two repository secrets under **Settings → Secrets and variables → Actions**:
-
-| Secret | Value |
-|---|---|
-| `MUSICD_KEYSTORE_BASE64` | the base64 blob from above |
-| `MUSICD_KEYSTORE_PASSWORD` | the password you chose |
-
-The alias is `musicd`, which the workflow passes as `MUSICD_KEY_ALIAS`.
-
-Then re-run the workflow (**Actions → CI → Re-run all jobs**, or push anything).
-The APK appears in `dist/`, `dist/latest.json` is written by the same job, and
-the download link in this README is rewritten to match.
-
-**Keep `musicd-release.jks` somewhere safe and do not commit it.** If it is
-lost, every future build is a different app as far as Android is concerned, and
+**Keep the keystore somewhere safe and do not commit it.** If it is lost,
+every future build is a different app as far as Android is concerned, and
 everyone with the old one installed has to uninstall before they can update.
 
-### Pinning the key (optional, recommended)
+### The key is pinned
 
 An APK signed with the *wrong* key installs fine and can then never be updated
 — Android refuses an update whose certificate changed, and says nothing useful
-about why. It stays invisible until somebody tries to update.
+about why. It stays invisible until somebody tries.
 
-Pin it and CI will catch that. After the first signed build, take the
-fingerprint from the job log (`signed by: …`) or read it locally:
+`tools/release-key.sha256` holds the expected fingerprint, so the `apk` job
+fails if a build is ever signed with anything else. It was produced with:
 
 ```bash
 apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk \
   | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' > tools/release-key.sha256
 ```
 
-Commit that file. From then on the `apk` job fails if a build is signed with
-anything else. Without the file the key simply is not pinned and the job says
-so in a notice — it is opt-in, not a prerequisite.
+If the file is ever removed the key is simply not pinned, and the job says so in
+a notice rather than failing — it is a guard, not a prerequisite.
 
 ---
 
