@@ -104,6 +104,26 @@ directory as-is.
 - **`optString` is unsafe.** Android's `org.json` returns the literal string
   `"null"` for a JSON null; the desktop one returns `""`. Every JVM test is
   blind to the difference. Use `str()` / `strOrNull()` from `Json.kt`.
+- **Spotify's album SEARCH returns no barcode, so albums must be searched BY
+  barcode.** `/search?type=album` yields SimplifiedAlbumObject, which has no
+  `external_ids` — so a candidate from `searchAlbums` always carries
+  `upc = ""`, and `matchAlbum`'s barcode tier compared a real Qobuz code
+  against an empty string for every candidate and could never fire. Everything
+  fell through to the title tiers, where the track-count gate then refused any
+  edition mismatch: **114 of 195 favourite albums reported "not found" on a
+  real library.** The fix is the `upc:` search filter (albums only), mirroring
+  `searchByIsrc` for tracks, and it must be tried BEFORE the title search —
+  an earlier version fetched the source barcode *after* searching, so the code
+  was never used to search for anything.
+  Because the result still carries no barcode, **the filter is the evidence**:
+  the code is stamped onto the result so the tier can see it, and only when the
+  result set is small (`UPC_TRUST_LIMIT`) — a barcode identifies one release,
+  and a crowd means the filter is not filtering, where stamping would be a
+  confidently wrong match.
+  The test fakes must model this: `FakeService.searchAlbums` strips `upc`,
+  because an earlier version returned it and thereby **hid the exact bug it
+  should have exposed** — the title path "matched on barcode" under test while
+  failing in production.
 - **Spotify's redirect path is `/login`, not `/api/spotify/callback`.** The
   shared community Client IDs — the only ones available while Spotify has new
   registrations frozen — whitelist exactly one loopback path, and any other

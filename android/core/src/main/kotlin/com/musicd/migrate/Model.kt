@@ -68,6 +68,17 @@ interface MusicService {
     fun searchByIsrc(isrc: String): List<Track>
     fun searchTracks(title: String, artist: String): List<Track>
     fun searchAlbums(title: String, artist: String): List<Album>
+
+    /**
+     * Albums by BARCODE — the album's answer to [searchByIsrc].
+     *
+     * Spotify's album search returns SimplifiedAlbumObject, which carries no
+     * external_ids and therefore no barcode, so the matcher's barcode tier
+     * could never fire against a search result. The `upc:` filter is the fix;
+     * see SpotifyClient.searchByUpc for why the returned albums are stamped
+     * with the code that was searched for, and when they are not.
+     */
+    fun searchByUpc(upc: String): List<Album>
     fun searchArtists(name: String): List<Artist>
     fun albumDetail(albumId: String): Album?
 

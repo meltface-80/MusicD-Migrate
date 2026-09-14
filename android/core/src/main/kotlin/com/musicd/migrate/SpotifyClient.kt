@@ -47,6 +47,13 @@ class SpotifyClient(
         const val MAX_RETRY_WAIT_MS = 60_000L
 
         /**
+         * How many results a `upc:` search may return and still be trusted as
+         * a barcode lookup. A barcode identifies one release; a crowd means
+         * the filter is not filtering. See searchByUpc.
+         */
+        const val UPC_TRUST_LIMIT = 3
+
+        /**
          * Trade the one-time code for tokens. No client secret — see Pkce.
          */
         fun exchangeCode(
@@ -279,6 +286,40 @@ class SpotifyClient(
         return request("GET", "/search", mapOf("q" to q, "type" to "track", "limit" to 12))
             ?.objOrNull("tracks")?.arrOrNull("items")?.objects()
             ?.mapNotNull { toTrack(it) }.orEmpty()
+    }
+
+    /**
+     * Albums by BARCODE, and the reason album matching went from
+     * mostly-missing to mostly-found.
+     *
+     * Spotify's album SEARCH returns SimplifiedAlbumObject — no
+     * `external_ids`, so no barcode — which meant every candidate from
+     * [searchAlbums] carried `upc = ""` and Match's barcode tier compared a
+     * real Qobuz code against an empty string for all of them. Everything fell
+     * through to the title tiers, where the track-count gate then refused any
+     * edition mismatch. Measured on a real library: 114 of 195 favourite
+     * albums reported "not found".
+     *
+     * The `upc:` filter is the fix (documented for /search, albums only). What
+     * comes back STILL has no barcode on it, so THE FILTER IS THE EVIDENCE: a
+     * hit is Spotify asserting the album carries that code, and the code is
+     * stamped onto the result so the tier can see it.
+     *
+     * Stamped only when the result set is SMALL. A barcode identifies one
+     * release; if this returns a crowd the filter is not behaving like a
+     * filter, and treating it as decisive would be exactly the confidently
+     * wrong match this app refuses to make. Unstamped, they are judged on
+     * title, artist and track count like anything else.
+     */
+    override fun searchByUpc(upc: String): List<Album> {
+        val code = upc.trim()
+        if (code.isEmpty()) return emptyList()
+        val albums = request("GET", "/search",
+            mapOf("q" to "upc:$code", "type" to "album", "limit" to 10))
+            ?.objOrNull("albums")?.arrOrNull("items")?.objects()
+            ?.mapNotNull { toAlbum(it) }.orEmpty()
+        if (albums.isEmpty() || albums.size > UPC_TRUST_LIMIT) return albums
+        return albums.map { it.copy(upc = code) }
     }
 
     override fun searchAlbums(title: String, artist: String): List<Album> {

@@ -262,4 +262,65 @@ class ClientsTest {
         assertEquals("podcast episode", tracks[1].skip)
         assertNull(tracks[2].skip)
     }
+    // ------------------------------------------------------- barcode search
+    // Spotify's album search returns SimplifiedAlbumObject with no
+    // external_ids, so a candidate never carries a barcode and Match's barcode
+    // tier could not fire. The `upc:` filter is the fix, and because the result
+    // still has no barcode on it, THE FILTER IS THE EVIDENCE — the code is
+    // stamped on so the tier can see it. JS twin: test/unit/clients.test.js.
+
+    @Test fun `a Spotify barcode search uses the upc filter and stamps the result`() {
+        val http = FakeHttp(listOf(FakeHttp.res(200, """
+            {"albums":{"items":[
+              {"id":"sal","name":"Master of Puppets","total_tracks":8,
+               "artists":[{"name":"Metallica"}]}
+            ]}}""")))   // note: NO external_ids, exactly as Spotify sends
+        val albums = SpotifyClient(liveSession(), http, sleeper = {})
+            .searchByUpc("075992736121")
+        assertTrue(http.calls[0].url.contains("q=upc%3A075992736121"))
+        assertTrue(http.calls[0].url.contains("type=album"))
+        assertEquals(1, albums.size)
+        assertEquals("the searched-for barcode must be stamped on, or the tier cannot fire",
+            "075992736121", albums[0].upc)
+    }
+
+    @Test fun `a barcode search that returns a crowd is not trusted as one`() {
+        // A barcode identifies one release. If the filter hands back a pile it
+        // is not filtering, and stamping would be a confidently wrong match.
+        val items = (0 until 6).joinToString(",") {
+            """{"id":"a$it","name":"Something Else","total_tracks":9,
+                "artists":[{"name":"Nope"}]}"""
+        }
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"albums":{"items":[$items]}}""")))
+        val albums = SpotifyClient(liveSession(), http, sleeper = {})
+            .searchByUpc("075992736121")
+        assertEquals(6, albums.size)
+        assertTrue("nothing is stamped, so these are judged on title and artist",
+            albums.all { it.upc.isEmpty() })
+    }
+
+    @Test fun `an empty barcode makes no request at all`() {
+        val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        assertEquals(emptyList<Album>(), sp.searchByUpc(""))
+        assertEquals(emptyList<Album>(), sp.searchByUpc("   "))
+        assertEquals(0, http.calls.size)
+    }
+
+    @Test fun `Qobuz searches the barcode as a plain query and needs no stamp`() {
+        // Unlike Spotify's, Qobuz's album listings DO carry upc, so Match
+        // compares the real codes itself.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """
+            {"albums":{"items":[
+              {"id":7,"title":"Master Of Puppets","upc":"075992736121",
+               "tracks_count":8,"artist":{"name":"Metallica"}}
+            ]}}""")))
+        val albums = QobuzClient(QobuzSession(token = "t"), http, sleeper = {})
+            .searchByUpc("075992736121")
+        assertTrue(http.calls[0].url.contains("query=075992736121"))
+        assertTrue(http.calls[0].url.contains("type=albums"))
+        assertEquals("read from the response, not stamped",
+            "075992736121", albums[0].upc)
+    }
+
 }

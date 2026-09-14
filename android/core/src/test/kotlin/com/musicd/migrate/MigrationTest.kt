@@ -365,4 +365,79 @@ class MigrationTest {
         assertEquals("and no request to find out who they are", 0, source.meCalls)
     }
 
+    // ----------------------------------------------------------------------
+    // Regression: albums were matched by barcode in name only. The JavaScript
+    // twin of these is at the end of test/unit/migrate.test.js.
+
+    private fun alb(
+        id: String = "qal", title: String = "Master Of Puppets",
+        artists: List<String> = listOf("Metallica"), upc: String = "075992736121",
+        trackCount: Int? = 8
+    ) = Album(id, upc, title, artists, trackCount)
+
+    @Test fun `an album is looked up by barcode before anything else`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb()))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            // A title the text search could never find, and a track count that
+            // would fail the close-tier gate. Only the barcode can match this.
+            Album("sal", "075992736121", "Meisterwerk der Marionetten",
+                listOf("Metallica"), 12)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(listOf("sal"), target.writtenAlbums)
+        assertEquals(1, r.counts["matched"])
+        assertEquals("the barcode tier must be what fired", "upc", r.items[0].method)
+        assertEquals(1, target.upcSearchCount.get())
+    }
+
+    @Test fun `the edition that differs only by a suffix is found by barcode`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "Master Of Puppets (Remastered)", trackCount = 8)))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "075992736121", "Master of Puppets", listOf("Metallica"), 10)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals("a barcode match beats the track-count gate", 1, r.counts["matched"])
+        assertEquals(listOf("sal"), target.writtenAlbums)
+    }
+
+    @Test fun `no barcode still falls back to title and artist`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals("exact", r.items[0].method)
+        assertEquals("no barcode search was wasted", 0, target.upcSearchCount.get())
+    }
+
+    @Test fun `a barcode that finds nothing falls back rather than giving up`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "000000000000")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "075992736121", "Master Of Puppets", listOf("Metallica"), 8)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals("the title tier picked it up", 1, r.counts["matched"])
+    }
+
+    @Test fun `a barcode search that throws costs the tier, not the album`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb()))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "075992736121", "Master Of Puppets", listOf("Metallica"), 8)))
+        target.upcSearchFails = true
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+    }
+
+    @Test fun `strict mode still accepts only the barcode for albums`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, strict = true))
+        assertEquals("no barcode, no match under strict", 1, r.counts["unmatched"])
+    }
+
 }

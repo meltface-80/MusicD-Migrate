@@ -71,6 +71,9 @@ Three tiers, and they are not interchangeable:
 1. **ISRC** — the recording's own identifier. The same code on both services
    means the same master of the same performance. This tier needs no
    corroboration, and it is why both clients ask for ISRCs on every read.
+   Albums use their **barcode** the same way, and are searched by it: Spotify's
+   album search does not return barcodes at all, so the barcode has to be the
+   thing you search *for* rather than something you compare afterwards.
 2. **Exact** — titles agree character for character once normalised, the
    artists overlap, *and* the durations agree within 5 seconds. Three
    independent facts.
@@ -159,7 +162,7 @@ scratch on the next run.
 
 ## Install: Android
 
-**Download: [`dist/musicd-migrate-0.1.2.apk`](dist/musicd-migrate-0.1.2.apk)**
+**Download: [`dist/musicd-migrate-0.1.3.apk`](dist/musicd-migrate-0.1.3.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once.
 
@@ -211,7 +214,7 @@ Android refuses to install an unsigned APK, so CI will not publish one: the
 `apk` job builds and checks everything, warns, and skips only the publish until
 a key is available.
 
-**The key for this project already exists.** `dist/musicd-migrate-0.1.2.apk`
+**The key for this project already exists.** `dist/musicd-migrate-0.1.3.apk`
 is signed with it, and its fingerprint is pinned in
 `tools/release-key.sha256`. Every later build has to use the **same** key or
 Android will refuse to install it over the copy already on the phone — that is

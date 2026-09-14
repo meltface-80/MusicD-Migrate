@@ -49,11 +49,28 @@ class FakeService {
     const q = String(title).toLowerCase();
     return this.catalogue.filter((t) => String(t.title).toLowerCase().includes(q));
   }
+  /**
+   * Album search, modelled on what Spotify ACTUALLY returns: a
+   * SimplifiedAlbumObject, which has no external_ids and therefore NO
+   * BARCODE. An earlier version of this fake handed back the catalogue entry
+   * complete with its upc, so the title path "matched on barcode" in tests
+   * while failing against the real service — the fake was hiding the exact bug
+   * it should have exposed. Set searchAlbumsCarriesUpc to model a service
+   * whose search does include it.
+   */
   async searchAlbums(title) {
     this.searchCount++;
     const q = String(title).toLowerCase();
-    return (this.catalogueAlbums || []).filter((a) =>
+    const hits = (this.catalogueAlbums || []).filter((a) =>
       String(a.title).toLowerCase().includes(q));
+    return this.searchAlbumsCarriesUpc ? hits
+      : hits.map((a) => Object.assign({}, a, { upc: "" }));
+  }
+  async searchByUpc(upc) {
+    this.upcSearchCount = (this.upcSearchCount || 0) + 1;
+    this.searchCount++;
+    if (this.upcSearchFails) throw new Error("barcode search blew up");
+    return (this.catalogueAlbums || []).filter((a) => a.upc && a.upc === upc);
   }
   async searchArtists(name) {
     this.searchCount++;
@@ -408,4 +425,98 @@ test("an explicit playlist selection is honoured even with an unknown account", 
   await run(source, target, Object.assign({}, NOTHING, { playlists: ["p1"] }));
   assert.strictEqual(target.written.created.length, 1,
     "an id the user picked needs no ownership check at all");
+});
+
+// --------------------------------------------------------------------------
+// Regression: albums were matched by barcode in name only.
+//
+// Spotify's album SEARCH returns simplified objects with no external_ids, so
+// every candidate carried upc:"" and the barcode tier compared a real Qobuz
+// code against an empty string — it could never fire. Worse, resolveAlbum
+// fetched the source barcode AFTER searching, so the code was never used to
+// search for anything. Everything fell through to the title tiers, where the
+// track-count gate rejected any edition mismatch: 114 of 195 favourite albums
+// reported "not found" on a real library.
+
+const album = (o) => Object.assign({
+  id: "qal", title: "Master Of Puppets", artists: ["Metallica"],
+  upc: "075992736121", trackCount: 8,
+}, o);
+
+test("an album is looked up by barcode BEFORE anything else", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({})] } });
+  const target = new FakeService("s", {});
+  // Deliberately a title the text search could never find, and a track count
+  // that would fail the close-tier gate. Only the barcode can match this.
+  target.catalogueAlbums = [{ id: "sal", title: "Meisterwerk der Marionetten",
+    artists: ["Metallica"], upc: "075992736121", trackCount: 12 }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.deepStrictEqual(target.written.albums, ["sal"]);
+  assert.strictEqual(result.counts.matched, 1);
+  assert.strictEqual(items[0].method, "upc", "the barcode tier must be what fired");
+  assert.strictEqual(target.upcSearchCount, 1, "and it searched by barcode");
+});
+
+test("the edition that differs only by a suffix is found by barcode", async () => {
+  // The real shape of the reported failure: Qobuz calls it
+  // "(Remastered)" with 8 tracks, Spotify's entry has a different count, and
+  // the close tier's track-count gate refuses it. The barcode settles it.
+  const source = new FakeService("q", { lib: { albums: [
+    album({ title: "Master Of Puppets (Remastered)", trackCount: 8 })] } });
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master of Puppets",
+    artists: ["Metallica"], upc: "075992736121", trackCount: 10 }];
+
+  const { result } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1, "a barcode match beats the track-count gate");
+  assert.deepStrictEqual(target.written.albums, ["sal"]);
+});
+
+test("no barcode on the album still falls back to title and artist", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
+  source.albumDetail = async () => null;   // and none to be fetched either
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 8 }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.strictEqual(items[0].method, "exact", "the title tier still works");
+  assert.strictEqual(target.upcSearchCount, undefined, "and no barcode search was wasted");
+});
+
+test("a barcode that finds nothing falls back rather than giving up", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "000000000000" })] } });
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "075992736121", trackCount: 8 }];
+
+  const { result } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1, "the title tier picked it up");
+});
+
+test("a barcode search that throws costs the barcode tier, not the album", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({})] } });
+  const target = new FakeService("s", {});
+  target.upcSearchFails = true;
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "075992736121", trackCount: 8 }];
+
+  const { result } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+});
+
+test("strict mode still accepts only the barcode for albums", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 8 }];
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, strict: true }));
+  assert.strictEqual(result.counts.unmatched, 1, "no barcode, no match under strict");
 });
