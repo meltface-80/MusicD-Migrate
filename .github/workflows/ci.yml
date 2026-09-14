@@ -104,9 +104,22 @@ jobs:
       # Installed here, where the download is visible in the log, rather than
       # leaving Gradle to fetch it mid-task where a stall looks identical to a
       # slow compile.
+      #
+      # `tools` IS NOT IN THIS LIST, and must not be added back. It is the
+      # legacy "Android SDK Tools" package (sdk-tools-linux-4333796.zip),
+      # obsolete for years and no longer reliably downloadable — sdkmanager
+      # fetches it, fails with "Error on ZipFile unknown archive", and takes
+      # the whole job with it. It also drags the emulator in behind it, which
+      # nothing here uses. Because the download only sometimes comes back
+      # corrupt, this passed twice and then failed on the merge to main, which
+      # is the worst way for a dependency to be broken.
+      #
+      # Nothing needs it: assembling the APK needs the platform and the
+      # build-tools, and `platform-tools` is kept only so CI's SDK matches the
+      # one used for local verification.
       - uses: android-actions/setup-android@v3
         with:
-          packages: 'tools platform-tools platforms;android-36 build-tools;36.0.0'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
       - uses: gradle/actions/setup-gradle@v4
 
