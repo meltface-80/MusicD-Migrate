@@ -144,8 +144,10 @@ jobs:
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "have_key=false" >> "$GITHUB_OUTPUT"
             echo "::warning::MUSICD_KEYSTORE_BASE64 is not set, so this build is" \
-                 "unsigned and will not be published to dist/. Everything else ran." \
-                 "See the Signing section of the README."
+                 "unsigned and will not be published to dist/, because Android cannot" \
+                 "install an unsigned APK. Everything else ran. To start publishing," \
+                 "add MUSICD_KEYSTORE_BASE64 and MUSICD_KEYSTORE_PASSWORD — see" \
+                 "\"Signing the APK\" in the README."
             exit 0
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/musicd-release.jks"
@@ -176,6 +178,42 @@ jobs:
               || (echo "::error::assets/web/$f in the APK differs from public/$f" && exit 1)
           done
           echo "the APK ships public/ unchanged"
+
+      # An APK signed with the WRONG key installs fine and can then never be
+      # updated — Android refuses an update whose certificate changed, and
+      # nothing says why. It is invisible until somebody tries, which is the
+      # worst time to find out.
+      #
+      # Inert until opted into: commit the expected fingerprint to
+      # tools/release-key.sha256 (the command is in the README) and this starts
+      # enforcing it. Without that file there is nothing to compare against and
+      # the step says so rather than passing silently.
+      - name: Check the APK is signed with the expected key
+        if: steps.signing.outputs.have_key == 'true'
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
+          got=$("$apksigner" verify --print-certs "$apk" \
+                | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          if [ -z "$got" ]; then
+            echo "::error::could not read a signing certificate out of $apk"
+            exit 1
+          fi
+          echo "signed by: $got"
+          if [ -f tools/release-key.sha256 ]; then
+            want=$(tr -d '[:space:]' < tools/release-key.sha256)
+            if [ "$got" != "$want" ]; then
+              echo "::error::this APK is signed with a different key than" \
+                   "tools/release-key.sha256 expects. It would install but could" \
+                   "never update over the published build. Expected $want."
+              exit 1
+            fi
+            echo "matches tools/release-key.sha256"
+          else
+            echo "::notice::tools/release-key.sha256 does not exist, so the key is" \
+                 "not pinned. To pin it: echo $got > tools/release-key.sha256"
+          fi
 
       - name: Name the artifact after the version
         id: name

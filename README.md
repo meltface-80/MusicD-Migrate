@@ -189,7 +189,88 @@ cd android
 ANDROID_HOME=/path/to/sdk ./gradlew :app:assembleRelease
 ```
 
-Needs JDK 17 and the Android SDK (platform 36, build-tools 36).
+Needs JDK 17 and the Android SDK (platform 36, build-tools 36). With no signing
+key configured this produces `app-release-unsigned.apk`, which **will not
+install** — see below.
+
+To get something you can put on a phone right now, build the debug variant
+instead. It is auto-signed with the local debug keystore:
+
+```bash
+cd android
+ANDROID_HOME=/path/to/sdk ./gradlew :app:assembleDebug
+# app/build/outputs/apk/debug/app-debug.apk
+```
+
+Fine for trying it. Not fine for keeping: the debug key is per-machine, so a
+later release-signed build cannot install over it and you would have to
+uninstall first.
+
+---
+
+## Signing the APK
+
+**This is why `dist/` is empty.** Android refuses to install an unsigned APK,
+so publishing one would put a file in `dist/` that the README links to and
+nobody can use. The `apk` job therefore builds and checks everything, warns,
+and skips only the publish — and it starts publishing by itself the moment the
+key exists. Nothing else needs changing.
+
+It has to be the **same key every build**, or Android refuses to install the
+new APK over the copy already on the phone. That is the whole reason this is a
+stored secret rather than a key generated per run.
+
+Make one, once:
+
+```bash
+keytool -genkeypair -v \
+  -keystore musicd-release.jks \
+  -alias musicd \
+  -keyalg RSA -keysize 4096 -validity 10950 \
+  -storetype PKCS12 \
+  -dname "CN=MusicD Migrate"
+```
+
+It asks for a password twice. Then:
+
+```bash
+base64 -w0 musicd-release.jks     # macOS: base64 -i musicd-release.jks
+```
+
+Add two repository secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `MUSICD_KEYSTORE_BASE64` | the base64 blob from above |
+| `MUSICD_KEYSTORE_PASSWORD` | the password you chose |
+
+The alias is `musicd`, which the workflow passes as `MUSICD_KEY_ALIAS`.
+
+Then re-run the workflow (**Actions → CI → Re-run all jobs**, or push anything).
+The APK appears in `dist/`, `dist/latest.json` is written by the same job, and
+the download link in this README is rewritten to match.
+
+**Keep `musicd-release.jks` somewhere safe and do not commit it.** If it is
+lost, every future build is a different app as far as Android is concerned, and
+everyone with the old one installed has to uninstall before they can update.
+
+### Pinning the key (optional, recommended)
+
+An APK signed with the *wrong* key installs fine and can then never be updated
+— Android refuses an update whose certificate changed, and says nothing useful
+about why. It stays invisible until somebody tries to update.
+
+Pin it and CI will catch that. After the first signed build, take the
+fingerprint from the job log (`signed by: …`) or read it locally:
+
+```bash
+apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk \
+  | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' > tools/release-key.sha256
+```
+
+Commit that file. From then on the `apk` job fails if a build is signed with
+anything else. Without the file the key simply is not pinned and the job says
+so in a notice — it is opt-in, not a prerequisite.
 
 ---
 
