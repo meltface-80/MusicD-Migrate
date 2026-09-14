@@ -25,4 +25,16 @@ dependencies {
 
 tasks.test {
     testLogging { events("passed", "failed", "skipped") }
+
+    // ContractTest reads files OUTSIDE this module — public/app.js, index.js,
+    // lib/canon.js, lib/service.js — and compares them with the Kotlin side.
+    // Gradle cannot know that, so it would report the task up to date after a
+    // change to any of them and the whole class of drift these tests exist to
+    // catch would go unchecked in exactly the case that matters: the JS half
+    // edited on its own. Declaring them as inputs makes the task rerun.
+    val repoRoot = rootProject.projectDir.parentFile
+    for (name in listOf("public/app.js", "index.js", "lib/canon.js", "lib/service.js")) {
+        val f = File(repoRoot, name)
+        if (f.isFile) inputs.file(f).withPropertyName(name.replace('/', '_'))
+    }
 }

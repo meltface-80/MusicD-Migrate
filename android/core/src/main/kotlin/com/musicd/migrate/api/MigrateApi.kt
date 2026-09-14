@@ -355,7 +355,7 @@ class MigrateApi(
 
     private fun playlists(req: Request): Response {
         val which = req.param("service").orEmpty()
-        val client: MusicService? = when (which) {
+        val client: MusicTarget? = when (which) {
             "qobuz" -> qobuzClient()
             "spotify" -> spotifyClient()
             else -> null
@@ -398,8 +398,8 @@ class MigrateApi(
         val sp = spotifyClient()
             ?: return Response.json(400, obj("error" to "Sign in to Spotify first."))
 
-        val source: MusicService = if (direction == "qobuz-to-spotify") qz else sp
-        val target: MusicService = if (direction == "qobuz-to-spotify") sp else qz
+        val source: MusicSource = if (direction == "qobuz-to-spotify") qz else sp
+        val target: MusicTarget = if (direction == "qobuz-to-spotify") sp else qz
 
         // `playlists` is either a boolean or an array of ids — the page sends
         // both shapes, so both are read here.
@@ -424,6 +424,9 @@ class MigrateApi(
             doTracks = b.optBoolean("tracks", false),
             dryRun = b.optBoolean("dryRun", false),
             strict = b.optBoolean("strict", false),
+            // Default ON, so an absent field means corroborate: an older page
+            // gets the safer behaviour rather than the title-only match.
+            corroborate = b.optBoolean("corroborate", true),
             onExisting = onExisting,
             includeOthersPlaylists = b.optBoolean("includeOthersPlaylists", false),
             playlistSuffix = b.str("playlistSuffix").take(40),

@@ -38,7 +38,7 @@ class QobuzClient(
     private val http: Http = UrlConnectionHttp(),
     private val onRateLimit: (Long) -> Unit = {},
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) }
-) : MusicService {
+) : MusicTarget {
 
     override val serviceName = "qobuz"
     override val accountId: String get() = session.userId
@@ -299,6 +299,16 @@ class QobuzClient(
      *  identical for Migration. */
     override fun albumDetail(albumId: String): Album? =
         toQobuzAlbum(request("album/get", mapOf("album_id" to albumId)))
+
+    override fun albumTracks(albumId: String): List<Track> {
+        val r = request("album/get", mapOf("album_id" to albumId, "extra" to "tracks"))
+        val album = toQobuzAlbum(r)
+        // Tracks inside an album response do not repeat the album block, so
+        // the album's own title and artist are threaded down -- without them
+        // every track carries an empty album name.
+        return r?.objOrNull("tracks")?.arrOrNull("items")?.objects().orEmpty()
+            .mapNotNull { toQobuzTrack(it, album) }
+    }
 
     // ----------------------------------------------------------------- writes
 

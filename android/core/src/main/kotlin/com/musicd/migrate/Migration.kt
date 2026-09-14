@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * fails.
  *
  * ONE CODE PATH, BOTH DIRECTIONS. This class never asks which service it is
- * talking to: SpotifyClient and QobuzClient both implement MusicService, so
+ * talking to: SpotifyClient and QobuzClient both implement MusicTarget, so
  * "Qobuz to Spotify" and "Spotify to Qobuz" are the same run with the two
  * swapped.
  *
@@ -44,7 +44,15 @@ data class MigrationOptions(
     val onExisting: String = "add-missing",
     val includeOthersPlaylists: Boolean = false,
     val playlistSuffix: String = "",
-    val concurrency: Int = 4
+    val concurrency: Int = 4,
+    /**
+     * Check a barcode-less album match against the album's own track listing.
+     *
+     * On by default: without a barcode, title and artist are not decisive
+     * evidence, and this is the app that refuses where the evidence is not
+     * decisive. Costs up to two extra reads per album.
+     */
+    val corroborate: Boolean = true
 )
 
 data class Progress(
@@ -73,8 +81,9 @@ data class Progress(
 }
 
 class Migration(
-    private val source: MusicService,
-    private val target: MusicService,
+    /** Read-only is enough for a source; Roon is one. See Model.kt. */
+    private val source: MusicSource,
+    private val target: MusicTarget,
     private val store: Store,
     private val jobId: String,
     private val options: MigrationOptions
@@ -522,6 +531,25 @@ class Migration(
             }
         }
 
+        // Still no barcode: the album's own track listing is the only
+        // independent evidence there is, so read it now rather than after
+        // searching. Doing it first is not a style choice -- the listing's
+        // LENGTH is the album's track count, and matchAlbum uses the count to
+        // rank the standard edition above the deluxe. Fetched after the
+        // search, it would have ranked nothing.
+        val corroborating = want.upc.isEmpty() && options.corroborate
+        var wantTitles: List<Track> = emptyList()
+        if (corroborating) {
+            // An empty list here is not a reason to skip the check -- it IS
+            // the check, and it fails with "could not read the track
+            // listing". Treating a failed read as "do not corroborate" would
+            // quietly restore the title-only match this tier replaces.
+            wantTitles = safely { source.albumTracks(a.id) } ?: emptyList()
+            if (wantTitles.isNotEmpty() && want.trackCount == null) {
+                want = want.copy(trackCount = wantTitles.size)
+            }
+        }
+
         var r: Match.Result? = null
         if (want.upc.isNotEmpty()) {
             searches.incrementAndGet()
@@ -542,10 +570,41 @@ class Migration(
             r = if (r2.matched) r2 else (if (r?.matched == true) r else r2)
         }
         if (r == null) r = Match.matchAlbum(emptyList(), want, options.strict)
+
+        // A barcode match is decisive and is never second-guessed. A title
+        // match without one is not, so it has to be corroborated or given up.
+        if (r.matched && corroborating) r = corroborate(r, wantTitles)
+
         val id = r.album?.id
         store.cacheMatch(sourceName, a.id, targetName, "album", id,
             if (id != null) r.method ?: "" else r.reason)
         return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
+    }
+
+    /**
+     * Check a title-tier album match against the album's track listing.
+     *
+     * Works down matchAlbum's shortlist, which is already ordered, and takes
+     * the first candidate whose listing agrees. Every candidate that does not
+     * is remembered so the refusal can quote the closest one -- "an album of
+     * that name is there but only 3 of your 11 tracks are on it" is something
+     * a user can act on, and "not found" is not.
+     */
+    private fun corroborate(r: Match.Result, wantTitles: List<Track>): Match.Result {
+        val shortlist = (if (r.shortlist.isNotEmpty()) r.shortlist else listOfNotNull(r.album))
+            .take(CORROBORATE_CANDIDATES)
+        var closest: Match.Agreement? = null
+        for (cand in shortlist) {
+            val tracks = safely { target.albumTracks(cand.id) } ?: emptyList()
+            val check = Match.tracklistCorroborates(wantTitles, tracks)
+            if (check.ok) {
+                return Match.Result(album = cand, method = (r.method ?: "") + "+tracklist",
+                    score = r.score, reason = check.reason)
+            }
+            if (closest == null || check.coverage > closest.coverage) closest = check
+        }
+        return Match.Result(reason = closest?.reason
+            ?: "no album of that name could be corroborated against its track listing")
     }
 
     fun resolveArtist(a: Artist): Resolved {
@@ -630,6 +689,21 @@ class Migration(
 
     companion object {
         private const val PROGRESS_INTERVAL_MS = 400L
+
+        /**
+         * How many shortlisted albums are checked against their track listing
+         * before giving up on a barcode-less album.
+         *
+         * Two, and the bound is the point. Each candidate costs a read on the
+         * other service, and a ten thousand album library at four candidates
+         * each is forty thousand requests against a rate-limited API. The
+         * shortlist is already ordered by title exactness, artist overlap and
+         * track count, so the right album is first or second or it is a
+         * different record.
+         *
+         * Kept in step with CORROBORATE_CANDIDATES in lib/migrate.js by hand.
+         */
+        private const val CORROBORATE_CANDIDATES = 2
 
         /**
          * Run something that talks to a service, treating a failure as "no

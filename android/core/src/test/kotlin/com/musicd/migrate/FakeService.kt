@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * A stand-in for a service client.
  *
- * It implements MusicService exactly as SpotifyClient and QobuzClient do,
+ * It implements MusicTarget exactly as SpotifyClient and QobuzClient do,
  * which is the point: Migration cannot tell them apart, and neither can this.
  * The JavaScript suite has the same fake in test/unit/migrate.test.js.
  */
@@ -18,7 +18,7 @@ open class FakeService(
     var libAlbums: MutableList<Album> = ArrayList(),
     var libArtists: MutableList<Artist> = ArrayList(),
     var libPlaylists: LinkedHashMap<String, Pair<String, MutableList<Track>>> = LinkedHashMap()
-) : MusicService {
+) : MusicTarget {
 
     override var accountId: String = "me"
 
@@ -108,6 +108,22 @@ open class FakeService(
     }
 
     override fun albumDetail(albumId: String): Album? = libAlbums.find { it.id == albumId }
+
+    /**
+     * An album's tracks, from [albumTrackListings]. Counted, because
+     * "corroboration is bounded" is a correctness property: a ten thousand
+     * album library at four reads each is forty thousand requests.
+     */
+    var albumTrackListings: MutableMap<String, List<Track>> = HashMap()
+    val albumTrackCalls = AtomicInteger(0)
+
+    override fun albumTracks(albumId: String): List<Track> {
+        albumTrackCalls.incrementAndGet()
+        if (albumTracksFails) throw RuntimeException("the source would not say")
+        return albumTrackListings[albumId] ?: emptyList()
+    }
+
+    var albumTracksFails = false
 
     override fun createPlaylist(name: String, description: String, isPublic: Boolean): Playlist {
         val id = "new${created.size + 1}"

@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 85 tests
+npm test                                                  # 181 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 102 tests
+cd android && ./gradlew :core:test                         # 133 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -53,8 +53,24 @@ So the rule, in `lib/match.js` and `Match.kt` alike:
 
 Concretely, and do not relax any of these without a very good argument:
 
-- **There is no "best guess" tier.** ISRC; or title+artist+duration; or
-  title-without-edition-suffix+artist+tighter-duration. Below that, nothing.
+- **There is no "best guess" tier.** For a TRACK: ISRC; or
+  title+artist+duration; or title-without-edition-suffix+artist+tighter-
+  duration. Below that, nothing. For an ALBUM: barcode; or
+  title+artist+**track listing**. Below that, nothing.
+- **Title and artist alone are not an album match.** They are not decisive:
+  "Greatest Hits" by almost anybody is several different records, a live album
+  and a studio album share a name often enough, and a covers band files under
+  a name that normalises to the same string. With no barcode — which is every
+  Roon album — the album's own TRACK LISTING carries the decision, at 70% of
+  what the user owns (`TRACKLIST_MIN_COVERAGE`, in both languages). Coverage
+  is measured against what the user OWNS, not against what the candidate
+  holds, or a deluxe edition scores half and a record that is plainly right is
+  refused. A barcode match is never re-checked against a listing: it is
+  decisive, and re-checking could only turn a right answer into a wrong
+  refusal.
+- **Two candidates, and no more.** Each corroboration costs a read on the
+  other service. Ten thousand albums at four candidates each is forty thousand
+  requests against a rate-limited API, and the shortlist is already ordered.
 - **An edition suffix is strippable. A different performance is not.**
   `(Remastered)` is the same performance. `(Live)`, `(Acoustic)`,
   `(Radio Edit)`, `(Someone Remix)`, `- Extended Mix`, `(Demo)` are not, and
@@ -83,17 +99,45 @@ So: **anything added to one server must be added to the other, and the page's
 spelling wins.** A mismatch breaks the APK and *nothing in the Docker build
 would notice*, because the container is the half everyone tests.
 
-`ContractTest.kt` catches three classes of that automatically — a route the
-page calls that one server does not serve, the two edition-word lists
-disagreeing, and `optString` escaping `Json.kt`. It does not catch a renamed
-JSON *field*. `ApiTest.kt` and `test/unit/server.test.js` assert the field
-names both sides emit; keep them in step by hand.
+`ContractTest.kt` catches five classes of that automatically — a route the
+page calls that one server does not serve, an option the page sends that one
+server never reads, the two edition-word lists disagreeing, the read/write
+method lists disagreeing, and `optString` escaping `Json.kt`. It does not catch
+a renamed JSON *field*. `ApiTest.kt` and `test/unit/server.test.js` assert the
+field names both sides emit; keep them in step by hand.
+
+Those tests read files outside `:core`, so `core/build.gradle.kts` declares
+them as task inputs. Without that Gradle reports `:core:test` up to date after
+a change to the JavaScript half alone — which is the one case the contract
+tests exist for.
 
 `public/` has no build step and must not acquire one. The APK bundles the
 directory as-is.
 
 ## Things about this codebase that are easy to get wrong
 
+- **Roon needs Node 22.** The MOO session runs over the global `WebSocket`,
+  which arrived in Node 22, and Node's WebSocket hands binary frames over as a
+  **Blob** unless `binaryType` is set to `"arraybuffer"` — a Blob read as a
+  Buffer is empty, so every MOO frame silently fails to parse and the Core
+  looks like it connected and then said nothing.
+  `test/unit/roon-socket.test.js` drives a real handshake over a hand-rolled
+  RFC 6455 server on loopback, which is what catches that. The Dockerfile and
+  CI are on 22.
+- **There is no Roon Core in CI, in Docker, or in the container this was
+  written in.** So `lib/roon-core.js` takes the socket, the discovery and the
+  token store as seams, and the tests drive a scripted Core and assert on the
+  exact frames. Discovery is the exception: it runs over a real UDP socket
+  against a fake Core on loopback, because a mock would assume the packet
+  layout rather than check it. What cannot be tested here is a REAL Core's
+  behaviour, and that has to be said plainly wherever Roon is handed over.
+- **A service is either readable or readable-and-writable.** `MusicSource` is
+  the reading half and `MusicTarget` adds the searches and the writes;
+  `lib/service.js` says the same in the only way JavaScript can, as a list of
+  method names and a check that throws. Roon is a source and can never be a
+  target — a Roon library is files on a disk. Get that wrong and the failure is
+  not a crash: `safely()` turns a failed search into one unmatched item on
+  purpose, so a whole run would report every album as "not found".
 - **Qobuz counts durations in SECONDS.** Spotify's `duration_ms` is
   milliseconds. The conversion happens once, in `toTrack`/`toQobuzTrack`, and
   nowhere else. A matcher comparing 213 against 213000 rejects every track in

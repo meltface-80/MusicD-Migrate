@@ -1,4 +1,8 @@
-FROM node:20-bookworm-slim
+# Node 22, not 20. Roon discovery and the MOO session need the global
+# WebSocket, which is only there from 22 — and Node 20 is out of support
+# anyway. A Roon scan on Node 20 would fail with "this Node build has no
+# WebSocket", which is at least loud, but there is no reason to ship it.
+FROM node:22-bookworm-slim
 
 # better-sqlite3 has no prebuilt binary for every platform this may be built
 # on, so the toolchain has to be here. It is the only native dependency.
