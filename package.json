@@ -10,6 +10,9 @@
     "url": "https://github.com/meltface-80/MusicD-Migrate.git"
   },
   "main": "index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node index.js",
     "test": "bash test/run.sh"

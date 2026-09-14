@@ -15,7 +15,7 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 103 tests
+npm test                                                  # 142 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
 cd android && ./gradlew :core:test                         # 117 tests
@@ -100,6 +100,21 @@ directory as-is.
 
 ## Things about this codebase that are easy to get wrong
 
+- **Roon needs Node 22.** The MOO session runs over the global `WebSocket`,
+  which arrived in Node 22, and Node's WebSocket hands binary frames over as a
+  **Blob** unless `binaryType` is set to `"arraybuffer"` — a Blob read as a
+  Buffer is empty, so every MOO frame silently fails to parse and the Core
+  looks like it connected and then said nothing.
+  `test/unit/roon-socket.test.js` drives a real handshake over a hand-rolled
+  RFC 6455 server on loopback, which is what catches that. The Dockerfile and
+  CI are on 22.
+- **There is no Roon Core in CI, in Docker, or in the container this was
+  written in.** So `lib/roon-core.js` takes the socket, the discovery and the
+  token store as seams, and the tests drive a scripted Core and assert on the
+  exact frames. Discovery is the exception: it runs over a real UDP socket
+  against a fake Core on loopback, because a mock would assume the packet
+  layout rather than check it. What cannot be tested here is a REAL Core's
+  behaviour, and that has to be said plainly wherever Roon is handed over.
 - **A service is either readable or readable-and-writable.** `MusicSource` is
   the reading half and `MusicTarget` adds the searches and the writes;
   `lib/service.js` says the same in the only way JavaScript can, as a list of
