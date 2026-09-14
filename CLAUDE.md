@@ -15,7 +15,7 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 142 tests
+npm test                                                  # 165 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
 cd android && ./gradlew :core:test                         # 117 tests
