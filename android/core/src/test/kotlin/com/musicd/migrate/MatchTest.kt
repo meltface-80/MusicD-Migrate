@@ -1,6 +1,8 @@
 package com.musicd.migrate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -154,5 +156,97 @@ class MatchTest {
             listOf(Artist("a", "Portishead")), Artist("q", "portishead")).method)
         assertNull(Match.matchArtist(
             listOf(Artist("a", "Portishead Tribute")), Artist("q", "Portishead")).method)
+    }
+
+    // --------------------------------------------------- the tracklist tier
+    //
+    // The gate that makes a barcode-less album match -- a Roon album --
+    // decisive. The JavaScript tests for the same rules are in
+    // test/unit/match.test.js; these two have to agree or the APK and the
+    // container migrate different records.
+
+    private fun tl(vararg titles: String): List<Track> =
+        titles.mapIndexed { i, t -> Track("t$i", "", t, emptyList(), "", null) }
+
+    @Test fun `a remastered edition's tracks agree with a local rip's`() {
+        // Spotify writes "So What - Remastered"; a rip just says "So What".
+        // Without stripping the suffix the two listings share nothing and the
+        // album the user owns is refused.
+        val mine = tl("So What", "Freddie Freeloader", "Blue In Green",
+                      "All Blues", "Flamenco Sketches")
+        val theirs = tl("So What - Remastered", "Freddie Freeloader - Remastered",
+                        "Blue In Green - Remastered", "All Blues - Remastered",
+                        "Flamenco Sketches - Remastered")
+        val c = Match.tracklistCorroborates(mine, theirs)
+        assertTrue(c.ok)
+        assertEquals(1.0, c.coverage, 0.0001)
+        assertTrue(c.reason.contains("all 5 track titles"))
+    }
+
+    @Test fun `coverage is of what the user owns, not what the candidate holds`() {
+        val mine = tl("A", "B", "C", "D")
+        val deluxe = tl("A", "B", "C", "D", "E", "F", "G", "H")
+        val a = Match.tracklistAgreement(mine, deluxe)
+        assertEquals("a deluxe edition contains all of the standard", 1.0, a.coverage, 0.0001)
+        assertEquals(4, a.wantCount)
+        assertEquals(8, a.candCount)
+        assertTrue(Match.tracklistCorroborates(mine, deluxe).ok)
+
+        val back = Match.tracklistCorroborates(deluxe, mine)
+        assertEquals(0.5, back.coverage, 0.0001)
+        assertFalse("half of a record is not that record", back.ok)
+    }
+
+    @Test fun `a different record with the same name is refused, with the numbers`() {
+        val c = Match.tracklistCorroborates(tl("One", "Two", "Three", "Four"),
+                                            tl("Nine", "Ten", "Eleven", "One"))
+        assertFalse(c.ok)
+        assertTrue(c.reason.contains("1 of your 4 tracks on its 4"))
+        assertTrue(c.reason.contains("different record with the same name"))
+    }
+
+    @Test fun `the tracklist threshold is where it says it is`() {
+        val ten = tl("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+        val seven = tl("a", "b", "c", "d", "e", "f", "g")
+        val six = tl("a", "b", "c", "d", "e", "f")
+        assertEquals(0.7, Match.TRACKLIST_MIN_COVERAGE, 0.0001)
+        assertTrue("7 of 10 passes", Match.tracklistCorroborates(ten, seven).ok)
+        assertFalse("6 of 10 does not", Match.tracklistCorroborates(ten, six).ok)
+        assertTrue(Match.tracklistCorroborates(ten, six, 0.6).ok)
+    }
+
+    @Test fun `could not check and checked-and-disagrees are different refusals`() {
+        val fromSource = Match.tracklistCorroborates(emptyList(), tl("a", "b"))
+        assertFalse(fromSource.ok)
+        assertTrue(fromSource.reason.contains("from the source"))
+
+        val fromTarget = Match.tracklistCorroborates(tl("a", "b"), emptyList())
+        assertFalse(fromTarget.ok)
+        assertTrue(fromTarget.reason.contains("other service would not list"))
+
+        assertNotEquals(fromSource.reason, fromTarget.reason)
+    }
+
+    @Test fun `duplicate track titles do not inflate the agreement`() {
+        val a = Match.tracklistAgreement(tl("Intro", "Intro", "Theme", "Coda"),
+                                          tl("Intro", "Intro", "Intro", "Intro"))
+        assertEquals("three distinct titles, not four", 3, a.wantCount)
+        assertEquals(1, a.shared)
+    }
+
+    @Test fun `a title that normalises to nothing is not a track`() {
+        val a = Match.tracklistAgreement(tl("", "   ", "Real Track"), tl("Real Track"))
+        assertEquals(1, a.wantCount)
+        assertEquals(1.0, a.coverage, 0.0001)
+    }
+
+    @Test fun `matchAlbum hands back everything that passed its gates`() {
+        val want = Album("q", "", "The Record", listOf("Band"), null)
+        val r = Match.matchAlbum(listOf(
+            Album("b", "", "The Record", listOf("Band"), null),
+            Album("a", "", "The Record", listOf("Band"), null),
+            Album("no", "", "Something Else", listOf("Band"), null)), want)
+        assertEquals("in score order, and a caller with no barcode works down it",
+            listOf("a", "b"), r.shortlist.map { it.id })
     }
 }

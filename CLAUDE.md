@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 165 tests
+npm test                                                  # 181 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 117 tests
+cd android && ./gradlew :core:test                         # 133 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -53,8 +53,24 @@ So the rule, in `lib/match.js` and `Match.kt` alike:
 
 Concretely, and do not relax any of these without a very good argument:
 
-- **There is no "best guess" tier.** ISRC; or title+artist+duration; or
-  title-without-edition-suffix+artist+tighter-duration. Below that, nothing.
+- **There is no "best guess" tier.** For a TRACK: ISRC; or
+  title+artist+duration; or title-without-edition-suffix+artist+tighter-
+  duration. Below that, nothing. For an ALBUM: barcode; or
+  title+artist+**track listing**. Below that, nothing.
+- **Title and artist alone are not an album match.** They are not decisive:
+  "Greatest Hits" by almost anybody is several different records, a live album
+  and a studio album share a name often enough, and a covers band files under
+  a name that normalises to the same string. With no barcode — which is every
+  Roon album — the album's own TRACK LISTING carries the decision, at 70% of
+  what the user owns (`TRACKLIST_MIN_COVERAGE`, in both languages). Coverage
+  is measured against what the user OWNS, not against what the candidate
+  holds, or a deluxe edition scores half and a record that is plainly right is
+  refused. A barcode match is never re-checked against a listing: it is
+  decisive, and re-checking could only turn a right answer into a wrong
+  refusal.
+- **Two candidates, and no more.** Each corroboration costs a read on the
+  other service. Ten thousand albums at four candidates each is forty thousand
+  requests against a rate-limited API, and the shortlist is already ordered.
 - **An edition suffix is strippable. A different performance is not.**
   `(Remastered)` is the same performance. `(Live)`, `(Acoustic)`,
   `(Radio Edit)`, `(Someone Remix)`, `- Extended Mix`, `(Demo)` are not, and

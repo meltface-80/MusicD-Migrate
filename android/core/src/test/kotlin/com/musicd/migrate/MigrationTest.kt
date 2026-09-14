@@ -401,15 +401,153 @@ class MigrationTest {
         assertEquals(listOf("sal"), target.writtenAlbums)
     }
 
-    @Test fun `no barcode still falls back to title and artist`() {
+    /** Track rows for a listing, which is all corroboration compares. */
+    private fun listing(vararg titles: String): List<Track> =
+        titles.mapIndexed { i, t -> Track("t$i", "", t, emptyList(), "", null) }
+
+    @Test fun `no barcode falls back to title, artist and the track listing`() {
+        val titles = listing("Battery", "Master of Puppets", "The Thing That Should Not Be")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
+        source.albumTrackListings["qal"] = titles
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 3)))
+        // As Spotify writes a remastered edition's tracks.
+        target.albumTrackListings["sal"] =
+            listing("Battery - Remastered", "Master of Puppets - Remastered",
+                    "The Thing That Should Not Be - Remastered")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals("with no barcode, the title tier alone is not decisive evidence",
+            "exact+tracklist", r.items[0].method)
+        assertEquals("no barcode search was wasted", 0, target.upcSearchCount.get())
+    }
+
+    @Test fun `a barcode-less album with a different track listing is refused, with a reason`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "Greatest Hits", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = listing("One", "Two", "Three", "Four")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Greatest Hits", listOf("Metallica"), null)))
+        target.albumTrackListings["sal"] = listing("Nine", "Ten", "Eleven", "One")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["unmatched"])
+        assertTrue("the report says what was wrong with it: ${r.items[0].note}",
+            r.items[0].note.orEmpty().contains("1 of your 4 tracks"))
+    }
+
+    @Test fun `corroboration works down the shortlist rather than trusting the top one`() {
+        val titles = listing("Aaa", "Bbb", "Ccc", "Ddd")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "The Record", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = titles
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("wrong", "", "The Record", listOf("Metallica"), null),
+            Album("right", "", "The Record", listOf("Metallica"), null)))
+        target.albumTrackListings["wrong"] = listing("Zzz", "Yyy")
+        target.albumTrackListings["right"] = titles
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals(listOf("right"), target.writtenAlbums)
+    }
+
+    @Test fun `corroboration is bounded and does not read the whole search result`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "The Record", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = listing("Aaa", "Bbb")
+        val target = FakeService("spotify", catalogueAlbums = (1..4).map {
+            Album("c$it", "", "The Record", listOf("Metallica"), null)
+        }.toMutableList())
+        for (i in 1..4) target.albumTrackListings["c$i"] = listing("No", "Nope")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["unmatched"])
+        assertEquals("two candidates, and no more", 2, target.albumTrackCalls.get())
+    }
+
+    @Test fun `a deluxe edition is accepted for the standard one the user owns`() {
+        // The coverage is measured against WHAT THE USER OWNS, not against
+        // what the candidate holds: a deluxe edition contains all of the
+        // standard plus bonus tracks, and measuring the other way round
+        // refuses a record that is plainly the right one.
+        val mine = listing("Aaa", "Bbb", "Ccc", "Ddd")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "The Record", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = mine
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("deluxe", "", "The Record", listOf("Metallica"), 8)))
+        target.albumTrackListings["deluxe"] =
+            listing("Aaa", "Bbb", "Ccc", "Ddd", "Eee", "Fff", "Ggg", "Hhh")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals(listOf("deluxe"), target.writtenAlbums)
+        assertTrue("which edition was taken is in the report: ${r.items[0].note}",
+            r.items[0].note.orEmpty().contains("on an edition of 8"))
+    }
+
+    @Test fun `the source album's own length ranks the standard edition above the deluxe`() {
+        // A Roon album arrives with no track count at all, so the listing read
+        // for corroboration is also what supplies it. Without that the two
+        // editions tie and the tie-break is alphabetical on an opaque id: a
+        // coin toss between the record the user owns and a different edition.
+        val mine = listing("Aaa", "Bbb", "Ccc", "Ddd")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "The Record", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = mine
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            // Named so an alphabetical tie-break would pick the wrong one.
+            Album("a-deluxe", "", "The Record", listOf("Metallica"), 8),
+            Album("z-standard", "", "The Record", listOf("Metallica"), 4)))
+        target.albumTrackListings["a-deluxe"] =
+            listing("Aaa", "Bbb", "Ccc", "Ddd", "E", "F", "G", "H")
+        target.albumTrackListings["z-standard"] = mine
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals("the edition with the same number of tracks is the one they own",
+            listOf("z-standard"), target.writtenAlbums)
+    }
+
+    @Test fun `corroboration can be turned off, and then the title tier decides alone`() {
         val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(
             Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
 
-        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        val r = run(source, target, NOTHING.copy(doAlbums = true, corroborate = false))
         assertEquals(1, r.counts["matched"])
         assertEquals("exact", r.items[0].method)
-        assertEquals("no barcode search was wasted", 0, target.upcSearchCount.get())
+        assertEquals("and nothing extra was read", 0, target.albumTrackCalls.get())
+    }
+
+    @Test fun `a barcode-less album whose listing cannot be read is refused, and says which`() {
+        // Deliberate: with no barcode and no listing there is no decisive
+        // evidence. The reason has to say it was a failure to CHECK rather
+        // than a record that is not there.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
+        source.albumTracksFails = true
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        target.albumTrackListings["sal"] = listing("Battery")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["unmatched"])
+        assertTrue(r.items[0].note.orEmpty().contains("track listing from the source"))
+    }
+
+    @Test fun `a barcode match is never second-guessed by a track listing`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "0075596040129")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "0075596040129", "Completely Different Title",
+                  listOf("Metallica"), 8)))
+        target.albumTrackListings["sal"] = listing("Nothing In Common")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["matched"])
+        assertEquals("upc", r.items[0].method)
+        assertEquals(0, target.albumTrackCalls.get())
     }
 
     @Test fun `a barcode that finds nothing falls back rather than giving up`() {

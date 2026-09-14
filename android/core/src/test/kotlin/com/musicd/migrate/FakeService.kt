@@ -109,6 +109,22 @@ open class FakeService(
 
     override fun albumDetail(albumId: String): Album? = libAlbums.find { it.id == albumId }
 
+    /**
+     * An album's tracks, from [albumTrackListings]. Counted, because
+     * "corroboration is bounded" is a correctness property: a ten thousand
+     * album library at four reads each is forty thousand requests.
+     */
+    var albumTrackListings: MutableMap<String, List<Track>> = HashMap()
+    val albumTrackCalls = AtomicInteger(0)
+
+    override fun albumTracks(albumId: String): List<Track> {
+        albumTrackCalls.incrementAndGet()
+        if (albumTracksFails) throw RuntimeException("the source would not say")
+        return albumTrackListings[albumId] ?: emptyList()
+    }
+
+    var albumTracksFails = false
+
     override fun createPlaylist(name: String, description: String, isPublic: Boolean): Playlist {
         val id = "new${created.size + 1}"
         val pl = Playlist(id = id, name = name)

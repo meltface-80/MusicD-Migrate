@@ -1,7 +1,9 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
-const { matchTrack, matchAlbum, matchArtist, normIsrc } = require("../../lib/match");
+const { matchTrack, matchAlbum, matchArtist, normIsrc,
+        tracklistAgreement, tracklistCorroborates,
+        TRACKLIST_MIN_COVERAGE } = require("../../lib/match");
 
 const t = (o) => Object.assign({
   id: "x", title: "Song", artists: ["Band"], album: "Record", durationMs: 200000,
@@ -151,4 +153,102 @@ test("artists match on an exact name only", () => {
     { name: "portishead" }).method, "name");
   assert.strictEqual(matchArtist([{ id: "a", name: "Portishead Tribute" }],
     { name: "Portishead" }).method, null);
+});
+
+// -------------------------------------------------------- the tracklist tier
+//
+// The gate that makes a barcode-less album match — a Roon album — decisive.
+// Pure, so the threshold and the wording are testable without a Core.
+
+const tl = (...titles) => titles.map((title) => ({ title }));
+
+test("a remastered edition's tracks agree with a local rip's", () => {
+  // Spotify writes "So What - Remastered"; a rip just says "So What". Without
+  // stripping the suffix the two listings share nothing and the album the user
+  // owns is refused.
+  const mine = tl("So What", "Freddie Freeloader", "Blue In Green",
+                  "All Blues", "Flamenco Sketches");
+  const theirs = mine.map((x) => ({ title: x.title + " - Remastered" }));
+  const c = tracklistCorroborates(mine, theirs);
+  assert.strictEqual(c.ok, true);
+  assert.strictEqual(c.coverage, 1);
+  assert.match(c.reason, /all 5 track titles/);
+});
+
+test("coverage is of what the user owns, not of what the candidate holds", () => {
+  const mine = tl("A", "B", "C", "D");
+  const deluxe = tl("A", "B", "C", "D", "E", "F", "G", "H");
+  const a = tracklistAgreement(mine, deluxe);
+  assert.strictEqual(a.coverage, 1, "a deluxe edition contains all of the standard");
+  assert.strictEqual(a.wantCount, 4);
+  assert.strictEqual(a.candCount, 8);
+  assert.strictEqual(tracklistCorroborates(mine, deluxe).ok, true);
+
+  // And the other way round: the user owns the deluxe, only the standard is
+  // there. Three quarters of it is, which clears the bar.
+  const back = tracklistCorroborates(deluxe, mine);
+  assert.strictEqual(back.coverage, 0.5);
+  assert.strictEqual(back.ok, false, "half of a record is not that record");
+});
+
+test("a different record with the same name is refused, with the numbers", () => {
+  const c = tracklistCorroborates(tl("One", "Two", "Three", "Four"),
+                                  tl("Nine", "Ten", "Eleven", "One"));
+  assert.strictEqual(c.ok, false);
+  assert.match(c.reason, /1 of your 4 tracks on its 4/);
+  assert.match(c.reason, /different record with the same name/);
+});
+
+test("the threshold is where it says it is", () => {
+  const ten = tl("a", "b", "c", "d", "e", "f", "g", "h", "i", "j");
+  const seven = tl("a", "b", "c", "d", "e", "f", "g");
+  const six = tl("a", "b", "c", "d", "e", "f");
+  assert.strictEqual(TRACKLIST_MIN_COVERAGE, 0.7);
+  assert.strictEqual(tracklistCorroborates(ten, seven).ok, true, "7 of 10 passes");
+  assert.strictEqual(tracklistCorroborates(ten, six).ok, false, "6 of 10 does not");
+  // And it is a parameter, not a law of nature.
+  assert.strictEqual(tracklistCorroborates(ten, six, { minCoverage: 0.6 }).ok, true);
+});
+
+test("could not check and checked-and-disagrees are different refusals", () => {
+  // They call for different things from the user: one is something to look
+  // into, the other is a record that is not there. Collapsing them into "not
+  // found" throws away the difference, and the unmatched report IS the
+  // deliverable of a migration.
+  const nothingFromSource = tracklistCorroborates([], tl("a", "b"));
+  assert.strictEqual(nothingFromSource.ok, false);
+  assert.match(nothingFromSource.reason, /from the source/);
+
+  const nothingFromTarget = tracklistCorroborates(tl("a", "b"), []);
+  assert.strictEqual(nothingFromTarget.ok, false);
+  assert.match(nothingFromTarget.reason, /other service would not list/);
+
+  assert.notStrictEqual(nothingFromSource.reason, nothingFromTarget.reason);
+});
+
+test("duplicate track titles on one album do not inflate the agreement", () => {
+  // A box set that repeats a title across discs, or a rip with a doubled
+  // track. Counting titles rather than distinct titles would let two shared
+  // names cover a four-track album.
+  const mine = tl("Intro", "Intro", "Theme", "Coda");
+  const a = tracklistAgreement(mine, tl("Intro", "Intro", "Intro", "Intro"));
+  assert.strictEqual(a.wantCount, 3, "three distinct titles, not four");
+  assert.strictEqual(a.shared, 1);
+});
+
+test("a title that normalises to nothing is not a track", () => {
+  const a = tracklistAgreement(tl("", "   ", "Real Track"), tl("Real Track"));
+  assert.strictEqual(a.wantCount, 1);
+  assert.strictEqual(a.coverage, 1);
+});
+
+test("matchAlbum hands back everything that passed its gates", () => {
+  const want = { id: "q", title: "The Record", artists: ["Band"], trackCount: null };
+  const r = matchAlbum([
+    { id: "b", title: "The Record", artists: ["Band"] },
+    { id: "a", title: "The Record", artists: ["Band"] },
+    { id: "no", title: "Something Else", artists: ["Band"] },
+  ], want);
+  assert.deepStrictEqual(r.shortlist.map((x) => x.id), ["a", "b"],
+    "in score order, and a caller with no barcode works down it");
 });

@@ -355,6 +355,9 @@ app.post("/api/migrate", async (req, res) => {
     tracks: !!body.tracks,
     dryRun: !!body.dryRun,
     strict: !!body.strict,
+    // Default ON, so an absent field means corroborate. The page sends it
+    // explicitly; an older page, or a curl, gets the safer behaviour.
+    corroborate: body.corroborate === undefined ? true : !!body.corroborate,
     onExisting: ["add-missing", "create-new", "skip"].includes(body.onExisting)
       ? body.onExisting : "add-missing",
     includeOthersPlaylists: !!body.includeOthersPlaylists,

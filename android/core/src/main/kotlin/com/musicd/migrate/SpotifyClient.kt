@@ -339,6 +339,17 @@ class SpotifyClient(
     override fun albumDetail(albumId: String): Album? =
         toAlbum(request("GET", "/albums/${urlEncode(albumId)}"))
 
+    /**
+     * An album's tracks.
+     *
+     * A SimplifiedTrackObject, so it carries no ISRC and no album block --
+     * fine for what this is for, which is comparing TITLES against the track
+     * listing of an album on the other side. Nothing here is migrated as a
+     * track.
+     */
+    override fun albumTracks(albumId: String): List<Track> =
+        pageAll("/albums/${urlEncode(albumId)}/tracks").mapNotNull { toTrack(it) }
+
     // ----------------------------------------------------------------- writes
 
     override fun createPlaylist(name: String, description: String, isPublic: Boolean): Playlist {

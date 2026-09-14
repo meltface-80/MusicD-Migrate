@@ -114,7 +114,7 @@ test("a migration records why tracks were skipped instead of finishing green", a
   const source = new RoonClient({ core: scriptedCore(), store });
   const target = {};
   for (const m of ["me", "playlists", "playlistTracks", "savedTracks", "savedAlbums",
-                   "followedArtists", "albumDetail", "searchByIsrc", "searchTracks",
+                   "followedArtists", "albumDetail", "albumTracks", "searchByIsrc", "searchTracks",
                    "searchAlbums", "searchByUpc", "searchArtists", "createPlaylist",
                    "addToPlaylist", "saveTracks", "saveAlbums", "followArtists"]) {
     target[m] = async () => [];

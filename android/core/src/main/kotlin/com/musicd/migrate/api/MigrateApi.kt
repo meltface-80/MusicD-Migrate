@@ -424,6 +424,9 @@ class MigrateApi(
             doTracks = b.optBoolean("tracks", false),
             dryRun = b.optBoolean("dryRun", false),
             strict = b.optBoolean("strict", false),
+            // Default ON, so an absent field means corroborate: an older page
+            // gets the safer behaviour rather than the title-only match.
+            corroborate = b.optBoolean("corroborate", true),
             onExisting = onExisting,
             includeOthersPlaylists = b.optBoolean("includeOthersPlaylists", false),
             playlistSuffix = b.str("playlistSuffix").take(40),

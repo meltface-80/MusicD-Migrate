@@ -81,6 +81,13 @@ class FakeService {
       String(a.name).toLowerCase() === q);
   }
   async albumDetail(id) { return (this.lib.albums || []).find((a) => a.id === id) || null; }
+  /** An album's tracks, from `tracks` on the catalogue or library entry. */
+  async albumTracks(id) {
+    this.albumTrackCalls = (this.albumTrackCalls || 0) + 1;
+    const from = (this.catalogueAlbums || []).concat(this.lib.albums || []);
+    const found = from.find((a) => a.id === id);
+    return (found && found.tracks) || [];
+  }
   async saveTracks(ids) { this.written.tracks.push(...ids); }
   async saveAlbums(ids) { this.written.albums.push(...ids); }
   async followArtists(ids) { this.written.artists.push(...ids); }
@@ -476,18 +483,179 @@ test("the edition that differs only by a suffix is found by barcode", async () =
   assert.deepStrictEqual(target.written.albums, ["sal"]);
 });
 
-test("no barcode on the album still falls back to title and artist", async () => {
-  const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
+test("no barcode on the album falls back to title, artist and the track listing", async () => {
+  const titles = ["Battery", "Master of Puppets", "The Thing That Should Not Be"];
+  const source = new FakeService("q", { lib: { albums:
+    [Object.assign(album({ upc: "" }), { tracks: titles.map((t) => ({ title: t })) })] } });
   source.albumDetail = async () => null;   // and none to be fetched either
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 3,
+    tracks: titles.map((t) => ({ title: t + " - Remastered" })) }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.strictEqual(items[0].method, "exact+tracklist",
+    "with no barcode, the title tier alone is not decisive evidence");
+  assert.strictEqual(target.upcSearchCount, undefined, "and no barcode search was wasted");
+});
+
+test("a barcode-less album with a different track listing is refused, and says why", async () => {
+  // The failure this is for: "Greatest Hits" by almost anybody is several
+  // different records, and a covers band files under a name that normalises
+  // to the same string. Title and artist agree; the record is not theirs.
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "Greatest Hits", upc: "" }), {
+    tracks: ["One", "Two", "Three", "Four"].map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Greatest Hits",
+    artists: ["Metallica"], upc: "",
+    tracks: ["Nine", "Ten", "Eleven", "One"].map((t) => ({ title: t })) }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.unmatched, 1);
+  assert.match(items[0].note, /1 of your 4 tracks/,
+    "the report says what was wrong with it, not just that it was not found");
+});
+
+test("corroboration works down the shortlist rather than trusting the top one", async () => {
+  const titles = ["Aaa", "Bbb", "Ccc", "Ddd"];
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "The Record", upc: "" }), {
+    tracks: titles.map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  // Both pass the title and artist gates. The first is a different record.
+  target.catalogueAlbums = [
+    { id: "wrong", title: "The Record", artists: ["Metallica"], upc: "",
+      tracks: [{ title: "Zzz" }, { title: "Yyy" }] },
+    { id: "right", title: "The Record", artists: ["Metallica"], upc: "",
+      tracks: titles.map((t) => ({ title: t })) },
+  ];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.deepStrictEqual(target.written.albums, ["right"]);
+  assert.match(items[0].method, /tracklist/);
+});
+
+test("a deluxe edition is accepted for the standard one the user owns", async () => {
+  // The coverage is measured against WHAT THE USER OWNS, not against what the
+  // candidate holds. A deluxe edition contains all of the standard plus bonus
+  // tracks; measuring the other way round scores it 0.5 and refuses a record
+  // that is plainly the right one. The report says the sizes so the user can
+  // see which edition they got.
+  const mine = ["Aaa", "Bbb", "Ccc", "Ddd"];
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "The Record", upc: "" }), {
+    tracks: mine.map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "deluxe", title: "The Record",
+    artists: ["Metallica"], upc: "", trackCount: 8,
+    tracks: mine.concat(["Eee", "Fff", "Ggg", "Hhh"]).map((t) => ({ title: t })) }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.deepStrictEqual(target.written.albums, ["deluxe"]);
+  assert.match(items[0].note, /on an edition of 8/,
+    "which edition was taken is in the report, not hidden");
+});
+
+test("the source album's own length ranks the standard edition above the deluxe", async () => {
+  // A Roon album arrives with no track count at all — nothing has drilled
+  // into it yet — so the listing read for corroboration is also what supplies
+  // it. Without that, matchAlbum has no count to rank on, the two editions
+  // tie, and the tie-break is alphabetical on an opaque id: a coin toss
+  // between the record the user owns and a different edition of it.
+  const mine = ["Aaa", "Bbb", "Ccc", "Ddd"];
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "The Record", upc: "", trackCount: null }), {
+    tracks: mine.map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [
+    // Named so that an alphabetical tie-break would pick the wrong one.
+    { id: "a-deluxe", title: "The Record", artists: ["Metallica"], upc: "",
+      trackCount: 8, tracks: mine.concat(["E", "F", "G", "H"]).map((t) => ({ title: t })) },
+    { id: "z-standard", title: "The Record", artists: ["Metallica"], upc: "",
+      trackCount: 4, tracks: mine.map((t) => ({ title: t })) },
+  ];
+
+  const { result } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.deepStrictEqual(target.written.albums, ["z-standard"],
+    "the edition with the same number of tracks is the one they own");
+});
+
+test("corroboration is bounded: it does not read the whole search result", async () => {
+  // Two candidates checked, not four. A ten thousand album library at four
+  // reads each is forty thousand requests against a rate-limited API.
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "The Record", upc: "" }), {
+    tracks: [{ title: "Aaa" }, { title: "Bbb" }] })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [1, 2, 3, 4].map((n) => ({
+    id: "c" + n, title: "The Record", artists: ["Metallica"], upc: "",
+    tracks: [{ title: "No" }, { title: "Nope" }],
+  }));
+
+  const { result } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.unmatched, 1);
+  assert.strictEqual(target.albumTrackCalls, 2, "two candidates, and no more");
+});
+
+test("corroboration can be turned off, and then the title tier decides alone", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
+  source.albumDetail = async () => null;
   const target = new FakeService("s", {});
   target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
     artists: ["Metallica"], upc: "", trackCount: 8 }];
 
   const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.strictEqual(items[0].method, "exact");
+  assert.strictEqual(target.albumTrackCalls, undefined, "and nothing extra was read");
+});
+
+test("a barcode-less album whose listing cannot be read is refused, and says which", async () => {
+  // Deliberate: with no barcode and no listing there is no decisive evidence,
+  // and this app refuses where the evidence is not decisive. The reason has to
+  // say it was a failure to CHECK rather than a record that is not there,
+  // because those call for different things from the user.
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
+  source.albumDetail = async () => null;
+  source.albumTracks = async () => { throw new Error("the source would not say"); };
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 8, tracks: [{ title: "Battery" }] }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.unmatched, 1);
+  assert.match(items[0].note, /track listing from the source/);
+});
+
+test("a barcode match is never second-guessed by a track listing", async () => {
+  // A barcode is decisive. Re-checking it against a listing could only turn a
+  // right answer into a wrong refusal, and would cost a read per album.
+  const source = new FakeService("q", { lib: { albums: [album({ upc: "0075596040129" })] } });
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Completely Different Title",
+    artists: ["Metallica"], upc: "0075596040129", tracks: [{ title: "Nothing In Common" }] }];
+
+  const { result, items } = await run(source, target,
     Object.assign({}, NOTHING, { albums: true }));
   assert.strictEqual(result.counts.matched, 1);
-  assert.strictEqual(items[0].method, "exact", "the title tier still works");
-  assert.strictEqual(target.upcSearchCount, undefined, "and no barcode search was wasted");
+  assert.strictEqual(items[0].method, "upc");
+  assert.strictEqual(target.albumTrackCalls, undefined);
 });
 
 test("a barcode that finds nothing falls back rather than giving up", async () => {

@@ -76,6 +76,17 @@ interface MusicSource {
     fun savedAlbums(): List<Album>
     fun followedArtists(): List<Artist>
     fun albumDetail(albumId: String): Album?
+
+    /**
+     * An album's track listing.
+     *
+     * In the READ half because it is asked of BOTH sides: of the source to
+     * learn what the user owns, and of a candidate on the target to
+     * corroborate a match made without a barcode. For a Roon album that
+     * listing is the only independent evidence there is -- see
+     * Match.tracklistCorroborates.
+     */
+    fun albumTracks(albumId: String): List<Track>
 }
 
 /**
