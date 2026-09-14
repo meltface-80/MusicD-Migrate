@@ -50,6 +50,13 @@ jobs:
       # The icons are generated, not checked in as art — so the committed PNGs
       # must be what the generator produces. A hand-edited icon would be undone
       # by the next run of the tool without this.
+      # v0.1.0 shipped unable to load its own page: Android denies cleartext
+      # HTTP by default at targetSdk 28+, the UI is served over http from
+      # 127.0.0.1, and every launch showed ERR_CLEARTEXT_NOT_PERMITTED. The
+      # APK compiled and every test passed. This is the guard.
+      - name: Check the Android network security config
+        run: python3 tools/check-android-cleartext.py
+
       - name: Check the icons match their generator
         run: |
           node tools/make-icons.js
@@ -214,6 +221,14 @@ jobs:
             echo "::notice::tools/release-key.sha256 does not exist, so the key is" \
                  "not pinned. To pin it: echo $got > tools/release-key.sha256"
           fi
+
+      # The same check against the built artifact, which is the stronger claim:
+      # that the manifest inside the APK really carries the attribute and the
+      # resource really is packaged (under whatever short name aapt2 gave it).
+      - name: Check the packaged network security config
+        run: |
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          python3 tools/check-android-cleartext.py --apk "$apk"
 
       - name: Name the artifact after the version
         id: name

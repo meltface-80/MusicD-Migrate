@@ -159,7 +159,7 @@ scratch on the next run.
 
 ## Install: Android
 
-**Download: [`dist/musicd-migrate-0.1.0.apk`](dist/musicd-migrate-0.1.0.apk)**
+**Download: [`dist/musicd-migrate-0.1.1.apk`](dist/musicd-migrate-0.1.1.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once.
 
@@ -211,7 +211,7 @@ Android refuses to install an unsigned APK, so CI will not publish one: the
 `apk` job builds and checks everything, warns, and skips only the publish until
 a key is available.
 
-**The key for this project already exists.** `dist/musicd-migrate-0.1.0.apk`
+**The key for this project already exists.** `dist/musicd-migrate-0.1.1.apk`
 is signed with it, and its fingerprint is pinned in
 `tools/release-key.sha256`. Every later build has to use the **same** key or
 Android will refuse to install it over the copy already on the phone — that is
@@ -292,33 +292,56 @@ the fallback on purpose: the password is hashed before it is sent, the way
 Qobuz's API wants it, and the plaintext is never stored, but the redirect is
 still better because this app never sees anything at all.
 
-### Spotify — one free app, about a minute
+### Spotify — you need a Client ID, and that is currently the hard part
 
-Spotify will not issue tokens to an application it does not know, and an
-application is registered against a **fixed list of redirect addresses**. This
-app's address is whatever machine you are running it on, so no shared Client ID
-could ever list yours. On top of that, a Spotify app in development mode serves
-at most 25 named users — a shared one would work for the first 25 people to try
-it and fail for everyone after.
+Spotify will not issue tokens to an application it does not know, so this app
+asks for a **Client ID**. There is no client secret: sign-in uses PKCE, which
+exists precisely for apps that cannot keep one, so nothing secret is shipped in
+the container or the APK.
 
-So:
+> **⚠️ Spotify has frozen new app registrations.** Since early 2026 the
+> **Create app** button on the developer dashboard has been greyed out, with
+> the tooltip *"New integrations are currently on hold while we make updates to
+> improve reliability and performance."* Community reports had it still
+> disabled in September 2026, and Spotify has given no timeline. Nothing in
+> this app can work around that — an unregistered client id gets no tokens.
+
+**If you already have a Spotify app**, from anything at all, you are fine:
+existing apps still work and only new ones are frozen.
 
 1. Open [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
-   → **Create app**.
-2. Name it anything. For **Redirect URI**, paste the address the app shows you
-   on its own Spotify card — it is derived from how you reached the page, so it
-   is already right.
-3. Tick **Web API**, save, then **Settings** → copy the **Client ID** into the
-   app.
+   and pick the app.
+2. **Settings → Edit → Redirect URIs**: add the address this app shows you on
+   its own Spotify card. It is derived from how you reached the page, so it is
+   already right — on the phone it is
+   `http://127.0.0.1:3380/api/spotify/callback`. Save.
+3. Copy the **Client ID** from that same page into this app.
 
-No client secret. Sign-in uses PKCE, which exists precisely for apps that
-cannot keep one — nothing secret is shipped in the container or the APK.
+**If you do not have one**, the Spotify half cannot be set up yet. Both
+directions of a migration need Spotify, so that blocks the whole thing. The
+dashboard's access-request form is the only sanctioned route, and it is slow.
+
+The open-source Spotify ecosystem — librespot, ncspot, Spotty, SpotOn — has
+long dealt with this by shipping a well-known Client ID that its users share.
+This app deliberately does **not** ship one: those ids belong to other
+projects, your traffic counts against their quota, and the consent screen names
+their application rather than this one. You are free to paste one into the
+Client ID field if you understand that trade-off; it is your decision to make,
+not a default this project imposes.
 
 #### If Spotify refuses your redirect URI
 
 Spotify accepts `https://…` or `http://` **on the loopback IP literal only**.
 `http://127.0.0.1:3380/api/spotify/callback` is fine;
 `http://localhost:3380/…` is refused, and so is `http://192.168.1.50:3380/…`.
+
+Whether the **port** has to match what you registered is less clear than this
+guide once claimed. RFC 8252 says a loopback redirect's port should be ignored,
+and SpotOn's author records a spike (2026-08-13) finding that Spotify does
+accept any `127.0.0.1` port for the clients they tested. That has not been
+verified here against a registration of our own, so register the exact address
+the app displays and treat port-agnosticism as a convenience you may or may not
+get.
 
 The app checks this for you and says so before you spend a sign-in finding out.
 Two ways through:

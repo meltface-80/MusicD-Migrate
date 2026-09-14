@@ -92,12 +92,33 @@ main { max-width: 860px; margin: 0 auto; }
   max-width: 860px;
 }
 
+/*
+ * SPACING IN FLEX ROWS IS DONE WITH MARGINS, NOT `gap`.
+ *
+ * Flexbox `gap` only arrived in Chrome 84. This page is bundled into an APK
+ * whose minSdk is 26, and an Android device's WebView is not always current —
+ * an API 28 emulator image carries a Chromium from well before 84, and there
+ * every `gap` in this file silently collapsed to nothing. The result was
+ * "Qobuznot signed in": a readable page with every word run together, and no
+ * error anywhere, which is this stylesheet's characteristic way of going
+ * wrong.
+ *
+ * The pattern below — negative margin on the container, equal margin on the
+ * children — is what `gap` replaced, and it works in every WebView this app
+ * supports. `gap` is kept ALONGSIDE it only for grid (.history), where it is
+ * supported far earlier and where no margin fallback is needed.
+ *
+ * Verified in both directions: rendered on the API 28 emulator's old WebView
+ * and in current Chromium, at phone and desktop widths.
+ */
+
 /* ------------------------------------------------------------ connections */
 
 .svc { border-top: 1px solid var(--line); padding: 14px 0 4px; }
 .svc:first-of-type { border-top: 0; padding-top: 0; }
 
-.svc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.svc-head { display: flex; align-items: center; flex-wrap: wrap; margin: 0 -4px; }
+.svc-head > * { margin: 0 4px; }
 .svc-head .who { color: var(--ink-dim); font-size: .92rem; }
 .svc-head button { margin-left: auto; }
 
@@ -132,7 +153,8 @@ code.copy:hover { border-color: var(--accent); }
 
 /* ------------------------------------------------------------- the setup */
 
-.direction { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.direction { display: flex; margin: 0 -4px 10px; flex-wrap: wrap; }
+.direction > * { margin: 4px; }
 
 .dir {
   flex: 1 1 200px;
@@ -146,10 +168,13 @@ code.copy:hover { border-color: var(--accent); }
 }
 .dir.on { border-color: var(--accent); background: var(--card); box-shadow: inset 0 0 0 1px var(--accent); }
 
-.kinds { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 12px; }
-.kinds label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.kinds { display: flex; flex-wrap: wrap; margin: 0 -9px 7px; }
+.kinds > label { margin: 5px 9px; }
+.kinds label { display: flex; align-items: center; cursor: pointer; }
+.kinds label > input { margin-right: 7px; }
 
-.pl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
+.pl-head { display: flex; align-items: center; flex-wrap: wrap; margin: 10px -4px 6px; }
+.pl-head > * { margin: 0 4px; }
 .pl-head .hint { margin-right: auto; }
 
 .pl-list {
@@ -160,9 +185,11 @@ code.copy:hover { border-color: var(--accent); }
   padding: 6px;
 }
 .pl-list label {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center;
   padding: 5px 6px; border-radius: 7px; cursor: pointer;
 }
+.pl-list label > * { margin-right: 8px; }
+.pl-list label > *:last-child { margin-right: 0; }
 .pl-list label:hover { background: var(--bg); }
 .pl-list .n { color: var(--ink-dim); font-size: .85rem; margin-left: auto; }
 .pl-list .tag {
@@ -173,16 +200,19 @@ code.copy:hover { border-color: var(--accent); }
 .opts { margin: 14px 0 4px; }
 .opts summary { cursor: pointer; color: var(--ink-dim); }
 .opt {
-  display: flex; gap: 9px; align-items: flex-start;
+  display: flex; align-items: flex-start;
   margin: 12px 0; line-height: 1.45;
 }
+.opt > * { margin-right: 9px; }
+.opt > *:last-child { margin-right: 0; }
 .opt select, .opt input[type="text"] { margin-left: auto; }
 
 .go { margin-top: 16px; align-items: center; }
 
 /* --------------------------------------------------------------- controls */
 
-.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.row { display: flex; flex-wrap: wrap; align-items: center; margin: 4px -4px; }
+.row > * { margin: 4px; }
 
 button, .btn {
   font: inherit;
@@ -233,7 +263,8 @@ details summary { cursor: pointer; }
 }
 .prog-label { color: var(--ink-dim); margin: 10px 0 6px; min-height: 1.5em; }
 
-.counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.counts { display: flex; flex-wrap: wrap; margin: 6px -4px; }
+.counts > * { margin: 4px; }
 .pill {
   border: 1px solid var(--line); border-radius: 999px;
   padding: 3px 11px; font-size: .88rem; color: var(--ink-dim);
@@ -261,9 +292,11 @@ details summary { cursor: pointer; }
 
 .history { display: grid; gap: 8px; }
 .hrow {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  display: flex; align-items: center; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
 }
+.hrow > * { margin: 2px 10px 2px 0; }
+.hrow > *:last-child { margin-right: 0; }
 .hrow .when { color: var(--ink-dim); font-size: .88rem; }
 .hrow .dirlabel { font-weight: 500; }
 .hrow .spacer { margin-left: auto; }

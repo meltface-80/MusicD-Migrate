@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THIS FILE IS WHY THE APP CAN LOAD ITS OWN PAGE.
+
+  Since Android 9 (API 28), an app whose targetSdkVersion is 28 or higher is
+  denied cleartext HTTP by default. This app's entire user interface is served
+  over plain HTTP from its OWN server on 127.0.0.1, so without this the WebView
+  refuses to load it and shows:
+
+      net::ERR_CLEARTEXT_NOT_PERMITTED
+
+  which looks exactly like the app trying and failing to reach something on the
+  network — when in fact nothing left the device at all. v0.1.0 shipped without
+  this file and did exactly that.
+
+  LOOPBACK ONLY, AND DELIBERATELY NARROWER THAN MusicD REMOTE LITE'S.
+
+  That app sets cleartextTrafficPermitted on its base-config, because it has to
+  talk to a Roon core over ws:// on the LAN. This app has no such need: the only
+  cleartext it ever does is to itself. So the base config is left at the secure
+  default — every other destination must be HTTPS — and the exemption is scoped
+  to the two names the loopback interface answers to.
+
+  That distinction matters here rather than being pedantry: this app holds
+  Qobuz and Spotify access tokens and can write to somebody's library. Its
+  calls to both services are HTTPS and stay that way, enforced, because
+  base-config still forbids cleartext.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The address MigrateService actually binds and the WebView loads. -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Not used by the app itself, but a redirect pasted back by hand can
+             arrive spelled this way, and it resolves to the same interface. -->
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

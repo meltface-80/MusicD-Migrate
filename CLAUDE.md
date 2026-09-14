@@ -104,6 +104,22 @@ directory as-is.
 - **`optString` is unsafe.** Android's `org.json` returns the literal string
   `"null"` for a JSON null; the desktop one returns `""`. Every JVM test is
   blind to the difference. Use `str()` / `strOrNull()` from `Json.kt`.
+- **The app cannot load its own page without a network security config.**
+  Android denies cleartext HTTP by default at targetSdk 28+, and the entire UI
+  is served over plain http from 127.0.0.1 by the app's own server. v0.1.0
+  shipped without `android:networkSecurityConfig` and every launch showed
+  `net::ERR_CLEARTEXT_NOT_PERMITTED`, which reads like a network failure when
+  nothing left the device. `tools/check-android-cleartext.py` guards it, in
+  both suites and in CI. Keep the exemption scoped to loopback in a
+  `domain-config`: this app holds two services' access tokens, and
+  `base-config` or `usesCleartextTraffic="true"` would permit cleartext to
+  every destination. The guard fails on either.
+- **Do not use flexbox `gap` in `public/style.css`.** It arrived in Chrome 84,
+  and an Android WebView is not always current — on API 28's bundled Chromium
+  every `gap` collapsed to nothing and the page rendered as "Qobuznot signed
+  in". Spacing in flex rows uses the negative-container-margin pattern
+  instead, which works everywhere. Grid `gap` (`.history`) is fine and is
+  supported far earlier.
 - **`[hidden]` loses to any author rule that sets `display`.** `button, .btn {
   display: inline-block }` made both "Sign out" buttons visible while signed
   out, while the JavaScript set `.hidden = true` faithfully. `style.css` now
@@ -164,10 +180,31 @@ this repository carries a comment saying why.
 both API clients, the migration engine, the HTTP server and the whole route
 table, including over a real socket.
 
-`app/src/main/kotlin/` has **nothing but the compiler**. There are no
-instrumentation tests and no device. So for anything in there, state plainly
-what was verified and what was not. "Compiles and the core tests pass" is an
-honest claim. "Fixed" is not, unless someone has run it on a phone.
+`app/src/main/kotlin/` has **no automated tests**. There are no instrumentation
+tests. So for anything in there, state plainly what was verified and what was
+not. "Compiles and the core tests pass" is an honest claim. "Fixed" is not,
+unless someone has run it.
+
+**An emulator can be run here, and it caught two bugs the whole test suite
+missed.** It needs no KVM — software emulation is slow but it boots, and an
+API 28 image is the right target because that is the release where cleartext
+became blocked:
+
+```bash
+sdkmanager "system-images;android-28;default;x86_64" "emulator"
+avdmanager create avd -n ct -k "system-images;android-28;default;x86_64" -d pixel
+emulator -avd ct -no-window -no-audio -no-boot-anim -gpu off -accel off &
+until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 15; done
+adb install -r <apk> && adb shell am start -n com.musicd.migrate/com.musicd.migrate.android.MainActivity
+adb exec-out screencap -p > shot.png
+adb shell dumpsys activity services com.musicd.migrate | grep isForeground
+```
+
+Expect ~10 minutes to boot and a "System UI isn't responding" dialog from the
+emulator itself — that is the software renderer, not the app. **Do this for any
+change to `app/`.** Two releases' worth of bugs were sitting behind a green
+suite: the missing cleartext config, and every flexbox `gap` collapsing on an
+older WebView.
 
 **Push logic down into `:core` wherever it can go** — that is the only place
 with tests.
