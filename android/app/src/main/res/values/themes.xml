@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A dark window background, and nothing else.
+
+      The activity is a WebView filling the screen, so the only thing this
+      theme is ever seen doing is the moment between the window appearing and
+      the page painting. A light default there is a white flash on every
+      launch.
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:navigationBarColor">@color/background</item>
+        <item name="android:colorAccent">@color/accent</item>
+    </style>
+</resources>

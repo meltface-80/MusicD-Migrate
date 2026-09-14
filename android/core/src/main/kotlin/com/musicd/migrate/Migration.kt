@@ -1,0 +1,617 @@
+package com.musicd.migrate
+
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
+/*
+ * Migration.kt — moving a library from one service to the other. The Kotlin
+ * twin of lib/migrate.js, and MigrationTest.kt is that file's test suite
+ * translated, so the APK and the container behave identically or something
+ * fails.
+ *
+ * ONE CODE PATH, BOTH DIRECTIONS. This class never asks which service it is
+ * talking to: SpotifyClient and QobuzClient both implement MusicService, so
+ * "Qobuz to Spotify" and "Spotify to Qobuz" are the same run with the two
+ * swapped.
+ *
+ * THE THREE PROMISES
+ *
+ * 1. It never invents a match. Everything goes through Match, which refuses
+ *    where the evidence is not decisive, and a refusal is REPORTED rather than
+ *    swallowed.
+ * 2. It is safe to run twice. Favourites are idempotent because both services'
+ *    save endpoints are; playlists are because a second run finds the playlist
+ *    it made and adds only what is missing.
+ * 3. It never writes anything in a dry run — while doing every read, search
+ *    and match, so the preview is the real answer rather than an estimate.
+ */
+
+class Cancelled : RuntimeException("Cancelled")
+
+data class MigrationOptions(
+    /** null = all of the user's own; a list = exactly these; empty = none. */
+    val playlistIds: List<String>? = null,
+    val doPlaylists: Boolean = true,
+    val doAlbums: Boolean = true,
+    val doArtists: Boolean = true,
+    val doTracks: Boolean = true,
+    val dryRun: Boolean = false,
+    val strict: Boolean = false,
+    val toleranceMs: Long = Match.DEFAULT_TOLERANCE_MS,
+    /** "add-missing" | "create-new" | "skip" */
+    val onExisting: String = "add-missing",
+    val includeOthersPlaylists: Boolean = false,
+    val playlistSuffix: String = "",
+    val concurrency: Int = 4
+)
+
+data class Progress(
+    val phase: String = "starting",
+    val step: String = "",
+    val label: String = "",
+    val done: Int = 0,
+    val total: Int = 0,
+    val counts: Map<String, Int> = emptyMap(),
+    val searches: Int = 0,
+    val cacheHits: Int = 0
+) {
+    fun toJson(): String = buildString {
+        append("{")
+        append("\"phase\":").append(jsonQuote(phase)).append(",")
+        append("\"step\":").append(jsonQuote(step)).append(",")
+        append("\"label\":").append(jsonQuote(label)).append(",")
+        append("\"done\":").append(done).append(",")
+        append("\"total\":").append(total).append(",")
+        append("\"searches\":").append(searches).append(",")
+        append("\"cacheHits\":").append(cacheHits).append(",")
+        append("\"counts\":{")
+        append(counts.entries.joinToString(",") { jsonQuote(it.key) + ":" + it.value })
+        append("}}")
+    }
+}
+
+class Migration(
+    private val source: MusicService,
+    private val target: MusicService,
+    private val store: Store,
+    private val jobId: String,
+    private val options: MigrationOptions
+) {
+    private val sourceName = source.serviceName
+    private val targetName = target.serviceName
+
+    private val cancelled = AtomicBoolean(false)
+    private val counts = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+    private val pending = java.util.Collections.synchronizedList(ArrayList<JobItem>())
+    private val searches = AtomicInteger(0)
+    private val cacheHits = AtomicInteger(0)
+
+    @Volatile private var progress = Progress()
+    @Volatile private var lastProgressAt = 0L
+
+    fun cancel() { cancelled.set(true) }
+
+    private fun checkCancelled() { if (cancelled.get()) throw Cancelled() }
+
+    private fun countsMap(): Map<String, Int> = counts.mapValues { it.value.get() }
+
+    /** Progress is written to the store and polled by the page. Throttled
+     *  because a per-track write is a disk write per track. */
+    private fun report(
+        phase: String = progress.phase, step: String = progress.step,
+        label: String = progress.label, done: Int = progress.done, total: Int = progress.total
+    ) {
+        progress = Progress(phase, step, label, done, total, countsMap(),
+            searches.get(), cacheHits.get())
+        val now = System.currentTimeMillis()
+        val terminal = phase == "done" || phase == "failed" || phase == "cancelled"
+        if (terminal || now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+            lastProgressAt = now
+            store.updateProgress(jobId, progress.toJson())
+        }
+    }
+
+    /**
+     * @param countAs how many things this row stands for. One, normally. A
+     *   failed BATCH write is the exception: it is a single row accounting for
+     *   every id in the batch, and counting it as one understates the damage
+     *   by forty-nine.
+     */
+    private fun record(item: JobItem, countAs: Int = 1) {
+        pending.add(item)
+        counts.getOrPut(item.status) { AtomicInteger(0) }.addAndGet(countAs)
+        // Flushed in batches: the job survives a crash to within a hundred
+        // rows, which is the right trade for a job re-runnable by design.
+        if (pending.size >= 100) flush()
+    }
+
+    private fun flush() {
+        synchronized(pending) {
+            if (pending.isEmpty()) return
+            store.addItems(jobId, ArrayList(pending))
+            pending.clear()
+        }
+    }
+
+    // --------------------------------------------------------------------- run
+
+    fun run(): Map<String, Int> {
+        try {
+            report(phase = "reading", label = "Reading your libraries")
+            val existing = readExisting()
+            checkCancelled()
+
+            if (options.doTracks) migrateSavedTracks(existing)
+            if (options.doAlbums) migrateSavedAlbums(existing)
+            if (options.doArtists) migrateArtists(existing)
+            if (options.doPlaylists) migratePlaylists()
+
+            flush()
+            report(phase = "done", label = "Finished")
+            return countsMap()
+        } catch (e: Cancelled) {
+            flush()
+            report(phase = "cancelled", label = "Cancelled")
+            throw e
+        } catch (e: Exception) {
+            flush()
+            report(phase = "failed", label = e.message ?: "Failed")
+            throw e
+        }
+    }
+
+    private class Existing {
+        val trackIsrc = HashSet<String>()
+        val trackKey = HashSet<String>()
+        val albumUpc = HashSet<String>()
+        val albumKey = HashSet<String>()
+        val artistKey = HashSet<String>()
+    }
+
+    /**
+     * What the destination already has.
+     *
+     * Indexed by ISRC and by a canonical "title|artist" key, because the same
+     * recording carries different ids on the two services and the id is the
+     * one thing that cannot be compared. Only the kinds actually being
+     * migrated are read — a playlists-only run has no reason to page someone's
+     * 4,000 saved tracks.
+     */
+    private fun readExisting(): Existing {
+        val out = Existing()
+        if (options.doTracks) {
+            for (t in target.savedTracks()) {
+                if (t.isrc.isNotEmpty()) out.trackIsrc.add(t.isrc.uppercase())
+                out.trackKey.add(trackKey(t))
+            }
+        }
+        checkCancelled()
+        if (options.doAlbums) {
+            for (a in target.savedAlbums()) {
+                if (a.upc.isNotEmpty()) out.albumUpc.add(digits(a.upc))
+                out.albumKey.add(albumKey(a))
+            }
+        }
+        checkCancelled()
+        if (options.doArtists) {
+            for (a in target.followedArtists()) out.artistKey.add(Canon.canon(a.name))
+        }
+        return out
+    }
+
+    // ----------------------------------------------------------- saved tracks
+
+    private fun migrateSavedTracks(existing: Existing) {
+        val src = source.savedTracks()
+        checkCancelled()
+        report(phase = "matching", step = "tracks", total = src.size, done = 0,
+            label = "Favourite tracks — ${src.size} to check")
+
+        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val done = AtomicInteger(0)
+        eachWithConcurrency(src) { t, _ ->
+            checkCancelled()
+            val label = trackLabel(t)
+            if ((t.isrc.isNotEmpty() && existing.trackIsrc.contains(t.isrc.uppercase())) ||
+                existing.trackKey.contains(trackKey(t))) {
+                record(JobItem("track", t.id, label, "already",
+                    note = "already a favourite there"))
+            } else {
+                val r = resolveTrack(t)
+                if (r.id != null) {
+                    toWrite.add(r.id)
+                    record(JobItem("track", t.id, label, "matched", targetId = r.id,
+                        method = r.method, note = r.reason))
+                } else {
+                    record(JobItem("track", t.id, label, "unmatched", note = r.reason))
+                }
+            }
+            report(done = done.incrementAndGet(), label = "Favourite tracks — $label")
+        }
+
+        write("favourite tracks", toWrite) { target.saveTracks(it) }
+    }
+
+    // ----------------------------------------------------------- saved albums
+
+    private fun migrateSavedAlbums(existing: Existing) {
+        val src = source.savedAlbums()
+        checkCancelled()
+        report(phase = "matching", step = "albums", total = src.size, done = 0,
+            label = "Favourite albums — ${src.size} to check")
+
+        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val done = AtomicInteger(0)
+        eachWithConcurrency(src) { a, _ ->
+            checkCancelled()
+            val label = albumLabel(a)
+            if ((a.upc.isNotEmpty() && existing.albumUpc.contains(digits(a.upc))) ||
+                existing.albumKey.contains(albumKey(a))) {
+                record(JobItem("album", a.id, label, "already",
+                    note = "already a favourite there"))
+            } else {
+                val r = resolveAlbum(a)
+                if (r.id != null) {
+                    toWrite.add(r.id)
+                    record(JobItem("album", a.id, label, "matched", targetId = r.id,
+                        method = r.method, note = r.reason))
+                } else {
+                    record(JobItem("album", a.id, label, "unmatched", note = r.reason))
+                }
+            }
+            report(done = done.incrementAndGet(), label = "Favourite albums — $label")
+        }
+
+        write("favourite albums", toWrite) { target.saveAlbums(it) }
+    }
+
+    // ---------------------------------------------------------------- artists
+
+    private fun migrateArtists(existing: Existing) {
+        val src = source.followedArtists()
+        checkCancelled()
+        report(phase = "matching", step = "artists", total = src.size, done = 0,
+            label = "Artists — ${src.size} to check")
+
+        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val done = AtomicInteger(0)
+        eachWithConcurrency(src) { a, _ ->
+            checkCancelled()
+            if (existing.artistKey.contains(Canon.canon(a.name))) {
+                record(JobItem("artist", a.id, a.name, "already", note = "already followed there"))
+            } else {
+                val r = resolveArtist(a)
+                if (r.id != null) {
+                    toWrite.add(r.id)
+                    record(JobItem("artist", a.id, a.name, "matched", targetId = r.id,
+                        method = r.method, note = r.reason))
+                } else {
+                    record(JobItem("artist", a.id, a.name, "unmatched", note = r.reason))
+                }
+            }
+            report(done = done.incrementAndGet(), label = "Artists — ${a.name}")
+        }
+
+        write("artists", toWrite) { target.followArtists(it) }
+    }
+
+    // -------------------------------------------------------------- playlists
+
+    private fun migratePlaylists() {
+        val all = source.playlists()
+        val wanted = if (options.playlistIds != null) {
+            all.filter { options.playlistIds.contains(it.id) }
+        } else {
+            all.filter {
+                options.includeOthersPlaylists || it.ownerId.isEmpty() ||
+                    it.ownerId == source.accountId
+            }
+        }
+
+        // Read once, before the loop: doing this per playlist would be one
+        // full paged read per playlist.
+        val byName = target.playlists().associateBy { Canon.canon(it.name) }
+
+        for ((pi, pl) in wanted.withIndex()) {
+            checkCancelled()
+            val targetName = pl.name.ifEmpty { "Playlist" } + options.playlistSuffix
+            val existingPl = byName[Canon.canon(targetName)]
+
+            if (existingPl != null && options.onExisting == "skip") {
+                record(JobItem("playlist", pl.id, pl.name, "skipped",
+                    targetId = existingPl.id,
+                    note = "a playlist called \"$targetName\" is already there"))
+                continue
+            }
+
+            val tracks = source.playlistTracks(pl.id)
+            report(phase = "matching", step = "playlist", total = tracks.size, done = 0,
+                label = "Playlist ${pi + 1} of ${wanted.size}: ${pl.name} " +
+                    "(${tracks.size} tracks)")
+
+            // Already in the destination playlist, when reusing it. Only then:
+            // for a brand-new playlist this is a request that can only return
+            // nothing.
+            val present = HashSet<String>()
+            if (existingPl != null && options.onExisting == "add-missing") {
+                for (t in target.playlistTracks(existingPl.id)) present.add(t.id)
+            }
+
+            // Positions are preserved even though lookups run concurrently:
+            // results are written back into a slot and read in order
+            // afterwards. Pushing as they land would shuffle every playlist
+            // into completion order.
+            val resolved = arrayOfNulls<String>(tracks.size)
+            val done = AtomicInteger(0)
+            eachWithConcurrency(tracks) { t, i ->
+                checkCancelled()
+                if (t.skip != null) {
+                    record(JobItem("track", "local:$i", t.title, "skipped",
+                        container = pl.name,
+                        note = "a ${t.skip}, which cannot be migrated"))
+                } else {
+                    val r = resolveTrack(t)
+                    if (r.id != null) {
+                        resolved[i] = r.id
+                        record(JobItem("track", t.id, trackLabel(t), "matched",
+                            container = pl.name, targetId = r.id, method = r.method,
+                            note = r.reason))
+                    } else {
+                        record(JobItem("track", t.id, trackLabel(t), "unmatched",
+                            container = pl.name, note = r.reason))
+                    }
+                }
+                report(done = done.incrementAndGet())
+            }
+
+            // De-duplicated WITHIN the playlist too: two source tracks can
+            // legitimately resolve to one destination track (the album cut and
+            // the single, same ISRC), and adding it twice is a duplicate the
+            // user did not have.
+            val unique = resolved.filterNotNull().filter { !present.contains(it) }.distinct()
+
+            if (options.dryRun) {
+                record(JobItem("playlist", pl.id, pl.name, "matched",
+                    note = "would ${if (existingPl != null) "add to" else "create"} " +
+                        "\"$targetName\" with ${unique.size} " +
+                        "track${if (unique.size == 1) "" else "s"}"))
+                continue
+            }
+
+            if (unique.isEmpty()) {
+                record(JobItem("playlist", pl.id, pl.name, "already",
+                    targetId = existingPl?.id,
+                    note = if (existingPl != null) "every track was already in it"
+                           else "nothing in it could be matched, so it was not created"))
+                continue
+            }
+
+            report(phase = "writing", label = "Writing $targetName")
+            try {
+                val destId: String
+                val note: String
+                if (existingPl != null && options.onExisting == "add-missing") {
+                    destId = existingPl.id
+                    note = "added ${unique.size} track${if (unique.size == 1) "" else "s"} " +
+                        "to the existing \"$targetName\""
+                } else {
+                    val made = target.createPlaylist(targetName,
+                        "Migrated from ${sourceName.replaceFirstChar { it.uppercase() }} " +
+                            "by MusicD Migrate.", false)
+                    destId = made.id
+                    note = "created with ${unique.size} " +
+                        "track${if (unique.size == 1) "" else "s"}"
+                }
+                target.addToPlaylist(destId, unique)
+                counts.getOrPut("written") { AtomicInteger(0) }.addAndGet(unique.size)
+                record(JobItem("playlist", pl.id, pl.name, "matched", targetId = destId,
+                    note = note))
+            } catch (e: Exception) {
+                record(JobItem("playlist", pl.id, pl.name, "failed", note = e.message))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ lookups
+
+    data class Resolved(val id: String?, val method: String?, val reason: String)
+
+    /**
+     * The lookup, and the reason a migration takes minutes rather than hours:
+     * a chance to answer with no network request at all, then at most two
+     * searches.
+     */
+    fun resolveTrack(t: Track): Resolved {
+        if (t.id.isEmpty()) return Resolved(null, null, "the source returned no usable track")
+
+        store.cachedMatch(sourceName, t.id, targetName, "track")?.let { c ->
+            cacheHits.incrementAndGet()
+            return if (c.toId != null) Resolved(c.toId, c.method, "from the match cache")
+                   else Resolved(null, null, c.method)
+        }
+
+        var result: Match.Result? = null
+
+        if (t.isrc.isNotEmpty()) {
+            searches.incrementAndGet()
+            result = Match.matchTrack(safely { target.searchByIsrc(t.isrc) } ?: emptyList(),
+                t, options.strict, options.toleranceMs)
+        }
+
+        if ((result == null || !result.matched) && !options.strict) {
+            // Searched WITHOUT the edition suffix and with the lead artist
+            // only. Searching for "Blue Monday - 2016 Remaster" by "New Order,
+            // Someone" finds nothing on a service that calls it "Blue Monday"
+            // by "New Order", and that is the largest source of false misses.
+            searches.incrementAndGet()
+            val cands = safely {
+                target.searchTracks(Canon.stripVersion(t.title), t.artists.firstOrNull() ?: "")
+            } ?: emptyList()
+            val r2 = Match.matchTrack(cands, t, options.strict, options.toleranceMs)
+            // Keep whichever matched, otherwise whichever refusal is more
+            // informative — the ISRC one says only "the search returned
+            // nothing", which tells the user nothing they can act on.
+            result = if (r2.matched) r2 else (if (result?.matched == true) result else r2)
+        }
+
+        val id = result?.track?.id
+        store.cacheMatch(sourceName, t.id, targetName, "track", id,
+            if (id != null) result?.method ?: "" else result?.reason ?: "not found")
+        return if (id != null) Resolved(id, result?.method, result?.reason ?: "")
+               else Resolved(null, null, result?.reason ?: "not found")
+    }
+
+    fun resolveAlbum(a: Album): Resolved {
+        if (a.id.isEmpty()) return Resolved(null, null, "the source returned no usable album")
+        store.cachedMatch(sourceName, a.id, targetName, "album")?.let { c ->
+            cacheHits.incrementAndGet()
+            return if (c.toId != null) Resolved(c.toId, c.method, "from the match cache")
+                   else Resolved(null, null, c.method)
+        }
+
+        searches.incrementAndGet()
+        val cands = safely {
+            target.searchAlbums(Canon.stripVersion(a.title), a.artists.firstOrNull() ?: "")
+        } ?: emptyList()
+
+        // The barcode is the album's ISRC and is worth a request to get:
+        // Spotify's search results carry it, Qobuz's usually do, and when
+        // neither side has one the title tier still runs.
+        var want = a
+        if (a.upc.isEmpty()) {
+            safely { source.albumDetail(a.id) }?.let { d ->
+                if (d.upc.isNotEmpty()) want = a.copy(upc = d.upc)
+            }
+        }
+
+        val r = Match.matchAlbum(cands, want, options.strict)
+        val id = r.album?.id
+        store.cacheMatch(sourceName, a.id, targetName, "album", id,
+            if (id != null) r.method ?: "" else r.reason)
+        return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
+    }
+
+    fun resolveArtist(a: Artist): Resolved {
+        if (a.id.isEmpty()) return Resolved(null, null, "the source returned no usable artist")
+        store.cachedMatch(sourceName, a.id, targetName, "artist")?.let { c ->
+            cacheHits.incrementAndGet()
+            return if (c.toId != null) Resolved(c.toId, c.method, "from the match cache")
+                   else Resolved(null, null, c.method)
+        }
+        searches.incrementAndGet()
+        val r = Match.matchArtist(safely { target.searchArtists(a.name) } ?: emptyList(), a)
+        val id = r.artist?.id
+        store.cacheMatch(sourceName, a.id, targetName, "artist", id,
+            if (id != null) r.method ?: "" else r.reason)
+        return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
+    }
+
+    // ------------------------------------------------------------------ writing
+
+    private fun write(what: String, ids: List<String>, fn: (List<String>) -> Unit) {
+        if (options.dryRun || ids.isEmpty()) return
+        report(phase = "writing", label = "Saving ${ids.size} $what")
+        try {
+            fn(ids)
+            counts.getOrPut("written") { AtomicInteger(0) }.addAndGet(ids.size)
+        } catch (e: Exception) {
+            // The whole batch failed, so every id in it is unwritten. One row
+            // rather than one per id, because the endpoint does not say which
+            // of the fifty it objected to — but it counts as all of them,
+            // which is the true number unwritten.
+            record(JobItem("write", what, what, "failed",
+                note = "saving ${ids.size} $what failed: ${e.message}"), ids.size)
+        }
+    }
+
+    /**
+     * A small worker pool. `fn` gets the item and its index, so callers that
+     * care about order can write results into a slot.
+     *
+     * Low concurrency on purpose: both services rate limit, and the 429
+     * backoff costs far more than the extra threads save.
+     */
+    private fun <T> eachWithConcurrency(list: List<T>, fn: (T, Int) -> Unit) {
+        if (list.isEmpty()) return
+        val n = options.concurrency.coerceIn(1, 8).coerceAtMost(list.size)
+        if (n == 1) {
+            list.forEachIndexed { i, item -> fn(item, i) }
+            return
+        }
+        val pool = Executors.newFixedThreadPool(n) { r ->
+            Thread(r, "migrate-worker").apply { isDaemon = true }
+        }
+        val next = AtomicInteger(0)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        try {
+            repeat(n) {
+                pool.execute {
+                    while (failure.get() == null) {
+                        val i = next.getAndIncrement()
+                        if (i >= list.size) return@execute
+                        try {
+                            fn(list[i], i)
+                        } catch (e: Throwable) {
+                            // The FIRST failure wins and the rest stop. A
+                            // cancel or an expired sign-in has to reach the
+                            // caller, and swallowing it here would leave the
+                            // run reporting misses for a library it never
+                            // actually searched.
+                            failure.compareAndSet(null, e)
+                            return@execute
+                        }
+                    }
+                }
+            }
+            pool.shutdown()
+            pool.awaitTermination(12, TimeUnit.HOURS)
+        } finally {
+            pool.shutdownNow()
+        }
+        failure.get()?.let { throw it }
+    }
+
+    companion object {
+        private const val PROGRESS_INTERVAL_MS = 400L
+
+        /**
+         * Run something that talks to a service, treating a failure as "no
+         * results".
+         *
+         * Only ever wrapped around a SEARCH. A search that errors means this
+         * one track cannot be looked up, and the right answer is to report it
+         * unmatched and carry on — failing the whole migration because one
+         * lookup timed out would throw away an hour of work over one track.
+         * Reads and writes are deliberately NOT wrapped: those failing means
+         * something is actually wrong.
+         */
+        private fun <T> safely(fn: () -> T): T? =
+            try {
+                fn()
+            } catch (e: AuthError) {
+                throw e // a dead sign-in is not "no results"
+            } catch (e: Cancelled) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+
+        fun trackKey(t: Track) =
+            Canon.canon(Canon.stripVersion(t.title)) + "|" +
+                Canon.primaryArtist(t.artists.firstOrNull() ?: "")
+
+        fun albumKey(a: Album) =
+            Canon.canon(Canon.stripVersion(a.title)) + "|" +
+                Canon.primaryArtist(a.artists.firstOrNull() ?: "")
+
+        fun trackLabel(t: Track) =
+            if (t.artists.isEmpty()) t.title else "${t.title} — ${t.artists.joinToString(", ")}"
+
+        fun albumLabel(a: Album) =
+            if (a.artists.isEmpty()) a.title else "${a.title} — ${a.artists.joinToString(", ")}"
+
+        fun digits(s: String) = s.filter { it.isDigit() }.trimStart('0')
+    }
+}
