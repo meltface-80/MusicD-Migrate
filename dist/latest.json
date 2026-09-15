@@ -1,6 +1,6 @@
 {
-  "version": "0.2.0",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.0.apk",
-  "sha256": "4951df81056b55a74c65d4ce2f8b85e6ee0fc231ba784d715dfee5d8217ab78c",
-  "notes": "Roon. Scan your Roon library and find its albums on Qobuz or Spotify, with a CSV of what was found and why anything was not. Albums with no barcode are now matched on their track listing rather than on a title."
+  "version": "0.2.1",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.1.apk",
+  "sha256": "458fc078f51ca8f658e097c76b192055a4aa282fb2b30296347d6837344d5be9",
+  "notes": "A read that failed is now reported as a FAILURE rather than as \"not found\", and is never cached, so a broken lookup cannot be mistaken for a library that is not there. Qobuz album track listings are read without an undefined parameter, which is one demonstrable cause of 0.2.0's albums all reporting not found. A run whose track-listing check never once works now stops and says why instead of searching for thousands of albums it could not have matched. The CSV download buttons work in the app at last — they did nothing at all from v0.1.0."
 }
