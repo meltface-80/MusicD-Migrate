@@ -415,7 +415,8 @@ class MigrateApi(
         val core = roon
         if (core == null) {
             return "{\"stage\":\"idle\",\"detail\":\"\",\"paired\":false," +
-                "\"albums\":0,\"scan\":null,\"scanning\":false,\"progress\":null}"
+                "\"albums\":0,\"scan\":null,\"scanning\":false,\"progress\":null," +
+                "\"scanError\":null}"
         }
         val st = core.status
         val coreId = core.coreId ?: "roon"
@@ -431,6 +432,11 @@ class MigrateApi(
             append(",\"albums\":").append(store.roonAlbumCount(coreId))
             append(",\"scanning\":").append(roonScanning)
             append(",\"scan\":").append(saved?.let { scanJson(it) } ?: "null")
+            // A scan that stopped for a reason says the reason. Without this
+            // the page shows "nothing scanned yet" after a failure, which
+            // reads as an empty library rather than as something that broke.
+            val err = store.setting("roon.scanError")
+            append(",\"scanError\":").append(if (err == null) "null" else jsonQuote(err))
             append(",\"progress\":")
             if (p == null) append("null") else append("{\"done\":").append(p[0])
                 .append(",\"total\":").append(p[1])

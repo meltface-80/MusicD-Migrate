@@ -178,22 +178,43 @@ class RoonClient(
         var duplicates = 0
 
         val saved = store.roonScan()
+        var resuming = false
         if (resume && saved != null && saved.coreId == coreId && saved.offset > 0) {
             offset = saved.offset
             stored = saved.stored
             duplicates = saved.duplicates
+            resuming = true
             log("resuming the Roon scan at album $offset")
         } else {
             // A fresh scan replaces the inventory rather than merging into it,
             // so a record deleted in Roon does not live on in an export.
             store.clearRoonAlbums(coreId)
         }
+        // A scan that stopped for a reason must not leave the reason behind to
+        // be shown against the next one.
+        store.deleteSetting("roon.scanError")
 
         return core.withSession { key ->
             val head = core.browse(JSONObject()
                 .put("hierarchy", "albums").put("multi_session_key", key).put("pop_all", true))
             requireList(head, "the album list")
             var total = head.objOrNull("list")?.intOrNull("count") ?: 0
+
+            // An offset only means the same album as long as the list is the
+            // same length: Roon sorts alphabetically, so a record bought since
+            // shifts everything after it and resuming would SKIP an album for
+            // every one added. A changed total is the detector, and starting
+            // over is a minute -- being quietly one album short of a ten
+            // thousand album inventory is not something anyone would notice.
+            if (resuming && total > 0 && saved != null && saved.total > 0 &&
+                total != saved.total) {
+                log("the library changed while the scan was stopped (${saved.total} albums " +
+                    "then, $total now) -- starting again")
+                offset = 0
+                stored = 0
+                duplicates = 0
+                store.clearRoonAlbums(coreId)
+            }
 
             while (true) {
                 if (cancelled()) break

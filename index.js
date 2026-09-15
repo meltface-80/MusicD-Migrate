@@ -193,7 +193,7 @@ function roonClient() {
 function roonState() {
   if (!roon) {
     return { stage: ROON_STAGE.IDLE, detail: "", paired: false, albums: 0, scan: null,
-             scanning: false };
+             scanning: false, scanError: null };
   }
   const status = roon.status;
   const coreId = roon.coreId || "roon";
@@ -203,6 +203,10 @@ function roonState() {
     scan: saved && saved.coreId === coreId ? saved : null,
     scanning: !!roonScan,
     progress: roonScan ? roonScan.progress : null,
+    // A scan that stopped for a reason says the reason. Without this the page
+    // would show "nothing scanned yet" after a failure, which reads as an
+    // empty library rather than as something that went wrong.
+    scanError: store.get("roon.scanError", null),
   });
 }
 

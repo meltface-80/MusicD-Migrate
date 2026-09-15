@@ -194,6 +194,47 @@ test("a scan that is interrupted resumes where it stopped", async () => {
     "it resumed at page two rather than paying for the first page again");
 });
 
+test("a resumed scan starts over when the library changed while it was stopped", async () => {
+  // An offset only means the same album as long as the list is the same
+  // length. Roon sorts alphabetically, so a record bought since shifts
+  // everything after it — and resuming at the old offset would SKIP an album
+  // for every one added. Being quietly one album short of a ten thousand
+  // album inventory is not something anyone would ever notice.
+  const store = tmpStore();
+  const first = [];
+  for (let i = 0; i < 250; i++) first.push(album("Album " + String(i).padStart(3, "0"), "A"));
+  let stopAfter = 0;
+  await new RoonClient({ core: scriptedCore({ albums: first }), store })
+    .scan({ cancelled: () => stopAfter++ >= 1 });
+  assert.strictEqual(store.roonAlbumCount("core-1"), 100);
+
+  // Two records bought while the scan was stopped, both sorting first.
+  const grown = [album("AAA one", "A"), album("AAA two", "A")].concat(first);
+  const core = scriptedCore({ albums: grown });
+  const summary = await new RoonClient({ core, store }).scan({ resume: true });
+
+  assert.strictEqual(summary.stored, 252, "every album, not the 150 a resume would have added");
+  assert.strictEqual(store.roonAlbumCount("core-1"), 252);
+  assert.ok(store.roonAlbums("core-1").some((a) => a.title === "AAA one"),
+    "the new records are in the inventory");
+  assert.ok(store.roonAlbums("core-1").some((a) => a.title === "Album 249"),
+    "and so is the last one");
+});
+
+test("a resumed scan of an unchanged library really does resume", async () => {
+  // The other side of it: the restart must not fire on every resume, or the
+  // resume is decoration and a stopped scan always pays from the beginning.
+  const store = tmpStore();
+  const albums = [];
+  for (let i = 0; i < 250; i++) albums.push(album("Album " + i, "A"));
+  const core = scriptedCore({ albums });
+  let seen = 0;
+  await new RoonClient({ core, store }).scan({ cancelled: () => seen++ >= 1 });
+  const loadsBefore = core.calls.load;
+  await new RoonClient({ core, store }).scan({ resume: true });
+  assert.strictEqual(core.calls.load - loadsBefore, 2, "pages two and three, not all three");
+});
+
 test("a rescan replaces the inventory rather than merging into it", async () => {
   const store = tmpStore();
   const first = scriptedCore({ albums: [album("Gone", "A"), album("Kept", "B")] });
@@ -289,7 +330,7 @@ test("the scan status reports what is on hand", async () => {
   const core = scriptedCore({ albums: [album("A", "B"), album("C", "D")] });
   const store = tmpStore();
   const client = new RoonClient({ core, store });
-  assert.deepStrictEqual(client.scanStatus(), { albums: 0, scan: null });
+  assert.deepStrictEqual(client.scanStatus(), { albums: 0, scan: null, error: null });
   await client.scan();
   const status = client.scanStatus();
   assert.strictEqual(status.albums, 2);

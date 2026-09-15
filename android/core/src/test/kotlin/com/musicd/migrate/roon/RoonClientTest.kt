@@ -146,6 +146,40 @@ class RoonClientTest {
             2, core.loadCalls - before)
     }
 
+    @Test fun `a resumed scan starts over when the library changed while it was stopped`() {
+        // An offset only means the same album as long as the list is the same
+        // length. Roon sorts alphabetically, so a record bought since shifts
+        // everything after it -- and resuming at the old offset would SKIP an
+        // album for every one added. Being quietly one album short of a ten
+        // thousand album inventory is not something anyone would notice.
+        val store: Store = MemoryStore()
+        val first = (0 until 250).map { alb("Album " + it.toString().padStart(3, '0'), "A") }
+        var stopAfter = 0
+        RoonClient(ScriptedCore(first), store).scan(cancelled = { stopAfter++ >= 1 })
+        assertEquals(100, store.roonAlbumCount("core-1"))
+
+        // Two records bought while the scan was stopped, both sorting first.
+        val grown = listOf(alb("AAA one", "A"), alb("AAA two", "A")) + first
+        val summary = RoonClient(ScriptedCore(grown), store).scan(resume = true)
+
+        assertEquals("every album, not the 150 a resume would have added", 252, summary.stored)
+        assertEquals(252, store.roonAlbumCount("core-1"))
+        assertTrue(store.roonAlbums("core-1").any { it.title == "AAA one" })
+        assertTrue(store.roonAlbums("core-1").any { it.title == "Album 249" })
+    }
+
+    @Test fun `a resumed scan of an unchanged library really does resume`() {
+        // The restart must not fire on every resume, or the resume is
+        // decoration and a stopped scan always pays from the beginning.
+        val store: Store = MemoryStore()
+        val core = ScriptedCore((0 until 250).map { alb("Album $it", "A") })
+        var seen = 0
+        RoonClient(core, store).scan(cancelled = { seen++ >= 1 })
+        val before = core.loadCalls
+        RoonClient(core, store).scan(resume = true)
+        assertEquals("pages two and three, not all three", 2, core.loadCalls - before)
+    }
+
     @Test fun `a rescan replaces the inventory rather than merging into it`() {
         val store: Store = MemoryStore()
         RoonClient(ScriptedCore(listOf(alb("Gone", "A"), alb("Kept", "B"))), store).scan()

@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 188 tests
+npm test                                                  # 190 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 175 tests
+cd android && ./gradlew :core:test                         # 177 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:

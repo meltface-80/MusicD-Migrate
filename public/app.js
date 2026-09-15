@@ -193,6 +193,10 @@
       $("roon-fill").style.width = pct + "%";
       note.textContent = "Scanning — " + p.done + (p.total ? " of " + p.total : "") +
         " albums" + (p.duplicates ? ", " + p.duplicates + " duplicates" : "");
+    } else if (r.scanError) {
+      // Said out loud. "Nothing scanned yet" after a failed scan reads as an
+      // empty library rather than as something that went wrong.
+      note.textContent = "The last scan stopped: " + r.scanError;
     } else if (r.albums) {
       note.textContent = r.albums + " albums scanned" +
         (r.scan && r.scan.duplicates
