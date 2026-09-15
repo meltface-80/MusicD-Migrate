@@ -1,7 +1,8 @@
 # MusicD Migrate
 
 Move playlists, favourite albums, followed artists and favourite tracks
-**between Qobuz and Spotify, in either direction**.
+**between Qobuz and Spotify, in either direction** — and find the albums in
+your **Roon** library on either of them.
 
 Two ways to run it, one codebase:
 
@@ -47,12 +48,66 @@ same migration with the source and destination swapped.
 
 ### What does *not* move
 
+* **Tracks and playlists, when the source is Roon.** Deliberately — see below.
 * **Play counts, dates added, playlist artwork and playlist descriptions.**
   Neither API offers a way to set most of these.
 * **Local files in a Spotify playlist.** They exist only on that machine.
   Reported as skipped, by name.
 * **Podcast episodes.** Not music, and there is nothing to match them to.
 * **Anything the other service does not have.** Reported, with the reason.
+
+---
+
+## Roon
+
+Point it at your Roon Core and it will scan your library — ten thousand local
+albums is fine — and then look for each of those albums on Qobuz or Spotify.
+The output is a **CSV with a row per album** saying, for each service, either
+what it was matched to or **why it was not**. That list is the point: it is
+what tells you which of your records are not available to stream, and which
+are there under a different edition.
+
+**Roon is a source only.** Nothing is ever written back into it — the files
+would have to exist first — so the two directions are Roon → Spotify and
+Roon → Qobuz, and there is no way to ask for the reverse.
+
+**Albums and artists. Not tracks, and not playlists.** This is a deliberate
+refusal, not a missing feature. A Roon browse row gives a title and an artist
+and *not a track's length*, and a title and an artist alone are exactly the
+two facts that a cover version, a re-recording and a live take also satisfy.
+Matching on that would quietly put the wrong recording in your library, which
+is the one failure this app is built to avoid. Ask for them anyway and the run
+records the reason rather than reporting nothing found.
+
+### How a Roon album is matched without a barcode
+
+Qobuz and Spotify both hand over a barcode, which identifies a release
+outright. Roon hands over none, so title and artist are all there is — and
+they are not enough on their own. "Greatest Hits" by almost anybody is several
+different records.
+
+So the album's **own track listing** carries the decision. A candidate has to
+match on title and artist *and* share at least 70% of the tracks you own, or
+it is refused and the report says how many it did share. Two different records
+by the same artist with the same title do not have the same eleven track
+titles.
+
+A deluxe edition is accepted for the standard one you own — it contains all of
+it — and the report says which edition you got.
+
+### Setting it up
+
+1. Press **Find my Roon Core**. Discovery is a UDP broadcast; if your network
+   drops those, type the address instead (Roon → Settings → General).
+2. Roon will show **MusicD Migrate** under **Settings → Extensions**. Enable
+   it. This happens once — the token is remembered per Core.
+3. Press **Scan my library**. A ten thousand album library is about a hundred
+   requests to the Core and takes a minute or two. It can be stopped and
+   resumed.
+4. Pick a direction, preview, and download the CSV.
+
+The extension is read-only: it asks Roon for the browse service and nothing
+else, it cannot play anything, and it cannot change anything in your library.
 
 ---
 
@@ -442,32 +497,48 @@ container" is something that fails a build rather than something to hope for.
 ## Verification
 
 ```bash
-npm test                                   # 85 tests: units + the API over a socket
+npm test                                   # 188 tests: units + the API over a socket
 npx eslint --config tools/eslint.config.mjs public/app.js
-cd android && ./gradlew :core:test         # 102 tests, the JS suite translated
+cd android && ./gradlew :core:test         # 175 tests, the JS suite translated
 ```
 
-Neither suite needs a Qobuz or Spotify account: the service clients are driven
-by a fake HTTP layer and the migration engine by fake services implementing the
-same interface.
+No suite needs a Qobuz account, a Spotify account or a Roon Core: the service
+clients are driven by a fake HTTP layer, the migration engine by fake services
+implementing the same interface, and the Roon client by a scripted browse tree
+behind an injectable socket.
 
-Three checks in `ContractTest` exist to stop the two halves drifting, because
+Five checks in `ContractTest` exist to stop the two halves drifting, because
 `public/app.js` is written once and shipped to both — so a mismatch breaks the
 APK and *nothing in the Docker build would notice*. They read the real source
 files and fail when:
 
 * a route the page calls is missing from `index.js` **or** `MigrateApi.kt`;
+* an option the page sends is never read by one of the two servers;
 * the edition-word lists in `lib/canon.js` and `Canon.kt` disagree;
+* the read/write method lists in `lib/service.js` and `Model.kt` disagree;
 * `optString` appears anywhere outside `Json.kt` — Android's `org.json` returns
   the **literal string `"null"`** for a JSON null, so a null ISRC read that way
   would be *searched for* on the other service. Every JVM test is blind to it.
 
+Two more pin the Roon protocol across the two implementations: the SOOD
+discovery packet byte for byte, and the album key, because the two halves must
+file the same record under the same id or a library scanned on one and
+migrated on the other pays for every lookup twice.
+
 ### What is not tested
 
-`MainActivity` and `MigrateService` — the WebView and the foreground service —
-have nothing but the compiler behind them. There are no instrumentation tests
-and no device in the loop. Everything underneath them, including the HTTP
-server and the whole route table, is exercised on a JVM over a real socket.
+**No Roon Core has ever been contacted.** There is none in CI and none in the
+environment this was written in. The protocol is a port of code that has run
+against a real Core, the codecs are tested exhaustively, discovery runs over a
+real UDP socket against a fake Core on loopback, and the transport runs over a
+real WebSocket against a hand-rolled RFC 6455 server — but the first genuine
+pairing will be yours.
+
+`MainActivity` and `MigrateService` — the WebView, the foreground service and
+the multicast lock — have nothing but the compiler behind them. There are no
+instrumentation tests and no device in the loop. Everything underneath them,
+including the HTTP server and the whole route table, is exercised on a JVM
+over a real socket.
 
 ---
 
