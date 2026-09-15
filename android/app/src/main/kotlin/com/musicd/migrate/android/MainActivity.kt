@@ -1,6 +1,8 @@
 package com.musicd.migrate.android
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -106,7 +108,166 @@ class MainActivity : Activity() {
         setContentView(web)
 
         load()
+        catchCrashes()
+        reportLastExit()
     }
+
+    /**
+     * Write the stack trace of a fatal crash before the process dies.
+     *
+     * Android's own record (see [reportLastExit]) reliably says an app
+     * CRASHED, but it kept `trace=null` for a plain Java crash on the API 30
+     * device this was checked on — and a reason with no trace does not say
+     * which line. The dying process can still write a file, so it does, into
+     * the app's own directory: no MediaStore, no permissions, no work beyond
+     * one small write while everything else is falling over.
+     *
+     * The previous handler is always called afterwards. Swallowing it would
+     * leave the process wedged instead of dying, which is worse than the
+     * crash.
+     */
+    private fun catchCrashes() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val sw = java.io.StringWriter()
+                error.printStackTrace(java.io.PrintWriter(sw))
+                val text = "MusicD Migrate " + versionName() + "\n" +
+                    "crashed on thread \"" + thread.name + "\"\n" +
+                    "when: " + java.util.Date() + "\n" +
+                    "device: " + Build.MANUFACTURER + " " + Build.MODEL +
+                    ", Android " + Build.VERSION.RELEASE +
+                    " (API " + Build.VERSION.SDK_INT + ")\n\n" + sw.toString()
+                java.io.File(filesDir, PENDING_CRASH).writeText(text)
+            } catch (e: Throwable) {
+                // Reporting a crash must never be the thing that crashes.
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    /**
+     * Ask Android why this app died last time, and save the answer where the
+     * user can get at it.
+     *
+     * A crash on a phone is evidence nobody can reach: there is no adb, the
+     * logcat is gone, and all the user can say is "it crashed". Android keeps
+     * the record itself — `getHistoricalProcessExitReasons` — including the
+     * stack trace for a Java crash and an ANR, so the app can hand it over
+     * instead of asking someone to reproduce it while plugged into a laptop.
+     *
+     * Only an abnormal end is reported. Being swiped away, or killed while in
+     * the background to free memory, is not a fault and saying so every launch
+     * would train the user to ignore the one that matters. The timestamp of
+     * the exit already reported is remembered, so one crash is reported once.
+     *
+     * API 30+. Below that there is no such record and nothing to report.
+     */
+    private fun reportLastExit() {
+        // Our own handler's trace, if it managed to write one. Taken first
+        // because it is the only version with a stack in it.
+        val pending = java.io.File(filesDir, PENDING_CRASH)
+        val ours = try {
+            if (pending.isFile) pending.readText() else null
+        } catch (e: Exception) {
+            null
+        }
+        if (ours != null) runCatching { pending.delete() }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            if (ours != null) saveCrashReport("crashed", ours)
+            return
+        }
+        val am = getSystemService(ACTIVITY_SERVICE) as? ActivityManager ?: return
+        val last = try {
+            // THIS APP's process, not any process the package owns. The most
+            // recent record is routinely the WebView's sandboxed renderer
+            // exiting normally ("isolated not needed"), and taking that one
+            // hides the crash sitting behind it — which is exactly what
+            // happened the first time this was run on an emulator.
+            am.getHistoricalProcessExitReasons(packageName, 0, 20)
+                .firstOrNull { it.processName == packageName }
+        } catch (e: Exception) {
+            // Reporting a crash must never be the thing that crashes.
+            null
+        }
+        if (last == null) {
+            if (ours != null) saveCrashReport("crashed", ours)
+            return
+        }
+
+        val prefs = getSharedPreferences("musicd", MODE_PRIVATE)
+        if (prefs.getLong("lastExitAt", 0L) == last.timestamp && ours == null) return
+        prefs.edit().putLong("lastExitAt", last.timestamp).apply()
+
+        val name = when (last.reason) {
+            ApplicationExitInfo.REASON_CRASH -> "crashed"
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "crashed (native)"
+            ApplicationExitInfo.REASON_ANR -> "stopped responding"
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "used too much memory"
+            ApplicationExitInfo.REASON_LOW_MEMORY -> "was killed for memory"
+            // Anything else is a normal end — swiped away, stopped by the
+            // system. Saying so every launch would train the user to ignore
+            // the one that matters. Our own trace still goes out, though: it
+            // exists only when something really did crash.
+            else -> { if (ours != null) saveCrashReport("crashed", ours); return }
+        }
+
+        val text = buildString {
+            append("MusicD Migrate ").append(versionName()).append('\n')
+            append("The app ").append(name).append('\n')
+            append("when: ").append(java.util.Date(last.timestamp)).append('\n')
+            append("reason: ").append(last.reason)
+                .append(" (").append(last.description ?: "").append(")\n")
+            append("importance at the time: ").append(last.importance).append('\n')
+            // The headline for a memory death, and the reason it is here at
+            // all: "used too much memory" with no number is not a report.
+            append("memory at the end: pss ").append(last.pss / 1024)
+                .append("MB, rss ").append(last.rss / 1024).append("MB\n")
+            append("device: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
+                .append(", Android ").append(Build.VERSION.RELEASE)
+                .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n\n")
+            val trace = try {
+                last.traceInputStream?.use { String(it.readBytes(), Charsets.UTF_8) }
+            } catch (e: Exception) {
+                null
+            }
+            // Ours has the stack; Android's often does not.
+            append(ours ?: trace ?: "Android kept no stack trace for this one.")
+        }
+        saveCrashReport(name, text)
+    }
+
+    /**
+     * Put a crash report where the user can find it, and say so.
+     *
+     * Off the main thread: it writes a file, and a launch is not the place to
+     * do disk I/O on the thread that draws.
+     */
+    private fun saveCrashReport(what: String, text: String) {
+        Thread({
+            val where = try {
+                store("musicd-crash.txt", text.toByteArray(Charsets.UTF_8), "text/plain")
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                Toast.makeText(this,
+                    "The app " + what + " last time. " +
+                    (where ?: "The details could not be saved."),
+                    Toast.LENGTH_LONG).show()
+            }
+        }, "exit-report").start()
+    }
+
+    private fun versionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
+    /** Where the dying process leaves its stack trace for the next launch. */
+    private val PENDING_CRASH = "crash-pending.txt"
 
     private fun isOurs(uri: Uri): Boolean =
         uri.scheme == "http" && (uri.host == "127.0.0.1" || uri.host == "localhost")
@@ -168,11 +329,15 @@ class MainActivity : Activity() {
     }
 
     /** @return what to tell the user, or null if it could not be written. */
-    private fun store(name: String, bytes: ByteArray): String? {
+    private fun store(name: String, bytes: ByteArray, mime: String = "text/csv"): String? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
-                put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+                // The type has to match the name or MediaStore RENAMES the
+                // file to suit it: saving crash-report.txt as "text/csv"
+                // lands it as "musicd-crash.txt.csv", which is what it did
+                // the first time this was run on an emulator.
+                put(MediaStore.Downloads.MIME_TYPE, mime)
             }
             val uri = contentResolver.insert(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null

@@ -204,6 +204,13 @@ class Migration(
             flush()
             report(phase = "failed", label = e.message ?: "Failed")
             throw e
+        } catch (t: Throwable) {
+            // An Error is not an Exception. Letting one past here would leave
+            // the progress saying "matching" forever while the process died
+            // under it. The rows recorded so far are flushed either way.
+            flush()
+            report(phase = "failed", label = "the app hit a " + t.javaClass.simpleName)
+            throw t
         }
     }
 

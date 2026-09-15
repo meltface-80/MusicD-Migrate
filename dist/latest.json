@@ -1,6 +1,6 @@
 {
-  "version": "0.2.3",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.3.apk",
-  "sha256": "442098feaffda4458cbca5c86a1d0eef8ee71b6b8bdae375baeacebea9587028",
-  "notes": "Searches now name ONE artist: Roon writes an album's artists as one slash-joined string and the whole thing went into the query, which was 457 of the 1,273 albums whose Qobuz search came back empty on a real 9,514-album library. An album refusal now quotes what WAS there — the closest record that artist has, or the same album name by somebody else — instead of only \"no album called that\". A read that failed is reported as a failure rather than as \"not found\" and is never cached. A run whose track-listing check never once works stops and says why, on the page. The CSV download buttons work in the app at last. Previous runs no longer label every Roon run \"Spotify to Qobuz\"."
+  "version": "0.2.4",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.4.apk",
+  "sha256": "5448300736dc5cc93cb3a6060c31ba15a21ee13183b27fdb81c4fa1234b0f976",
+  "notes": "For the Roon to Spotify crash. The app now asks Android why it died last time and writes it to Downloads/musicd-crash.txt on the next launch, so a crash on a phone stops being unreportable. A run that dies of an Error rather than an exception is recorded as a failed run instead of killing the app silently. And the Spotify token refresh is now shared between the four concurrent workers: an access token lasts an hour, a big library does not, and four simultaneous refreshes with the same single-use rotating token was destroying the sign-in. None of that can happen on a run into Qobuz, whose token neither expires nor rotates."
 }

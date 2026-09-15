@@ -149,6 +149,79 @@ test("a Spotify 401 refreshes once, then gives up rather than looping", async ()
   await assert.rejects(() => sp.me(), /expired/);
 });
 
+test("four workers hitting an expired token refresh it ONCE between them", async () => {
+  // Spotify ROTATES refresh tokens: the first refresh invalidates the one it
+  // was given. Lookups run four at a time, so with an expired access token
+  // every worker in flight asks for a refresh at the same moment — and
+  // without sharing one, three of them present a token that has just been
+  // revoked. The loser's answer can overwrite the winner's, which does not
+  // fail a request: it destroys the sign-in.
+  //
+  // A Qobuz user_auth_token neither expires nor rotates, which is exactly why
+  // a run into Qobuz never showed this and a run into Spotify does.
+  let tokenCalls = 0;
+  const fetch = async (url, init) => {
+    const body = String((init && init.body) || "");
+    if (String(url).includes("/api/token")) {
+      tokenCalls++;
+      // The rotated token is single use. Presenting "ref" twice is what a
+      // real Spotify refuses.
+      const revoked = tokenCalls > 1 && body.includes("refresh_token=ref");
+      return {
+        ok: !revoked,
+        status: revoked ? 400 : 200,
+        headers: { get: () => null },
+        text: async () => JSON.stringify(revoked
+          ? { error: "invalid_grant", error_description: "Refresh token revoked" }
+          : { access_token: "AT1", refresh_token: "RT1", expires_in: 3600 }),
+      };
+    }
+    return { ok: true, status: 200, headers: { get: () => null },
+             text: async () => JSON.stringify({ albums: { items: [] } }) };
+  };
+
+  const saved = [];
+  const sp = new Spotify(
+    Object.assign({}, liveSession, { accessToken: "stale", expiresAt: Date.now() - 1000 }),
+    { fetch, onTokens: (t) => saved.push(t) });
+
+  await Promise.all([
+    sp.searchAlbums("a", "x"), sp.searchAlbums("b", "x"),
+    sp.searchAlbums("c", "x"), sp.searchAlbums("d", "x"),
+  ]);
+
+  assert.strictEqual(tokenCalls, 1, "one refresh, shared, not four races for a single-use token");
+  assert.strictEqual(sp.session.refreshToken, "RT1", "and the rotated token is the one kept");
+  assert.strictEqual(saved.length, 1, "persisted once");
+});
+
+test("a refresh that fails is not remembered as the one in flight", async () => {
+  // The shared promise has to be cleared however it settles, or one network
+  // blip would leave every later request awaiting a promise that has already
+  // rejected — a sign-in that can never recover without a restart.
+  let tokenCalls = 0;
+  const fetch = async (url) => {
+    if (String(url).includes("/api/token")) {
+      tokenCalls++;
+      const bad = tokenCalls === 1;
+      return { ok: !bad, status: bad ? 500 : 200, headers: { get: () => null },
+               text: async () => JSON.stringify(bad
+                 ? { error: "server_error" }
+                 : { access_token: "AT2", refresh_token: "RT2", expires_in: 3600 }) };
+    }
+    return { ok: true, status: 200, headers: { get: () => null },
+             text: async () => JSON.stringify({ albums: { items: [] } }) };
+  };
+  const sp = new Spotify(
+    Object.assign({}, liveSession, { accessToken: "stale", expiresAt: Date.now() - 1000 }),
+    { fetch });
+
+  await assert.rejects(() => sp.searchAlbums("a", "x"));
+  await sp.searchAlbums("b", "x");
+  assert.strictEqual(tokenCalls, 2, "the second attempt really did try again");
+  assert.strictEqual(sp.session.accessToken, "AT2");
+});
+
 // ----------------------------------------------------------- write batching
 
 test("Spotify playlist writes batch at 100 and use track URIs", async () => {
