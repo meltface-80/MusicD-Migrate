@@ -50,7 +50,20 @@ object Match {
          * album's track listing rather than taking the top one on trust --
          * see [tracklistCorroborates].
          */
-        val shortlist: List<Album> = emptyList()
+        val shortlist: List<Album> = emptyList(),
+        /**
+         * The refusal came from a READ that failed, not from evidence.
+         *
+         * "We looked and it is not there" is an answer and is cached. "We
+         * could not look" is not, and a caller must not cache it or count it
+         * as a miss -- see Migration.resolveAlbum. 0.2.0 shipped with a
+         * broken corroboration read and every album came back "not found",
+         * which read as a library that is not on the other service rather
+         * than as a thing that was broken.
+         *
+         * Kept in step with `unreadable` in lib/match.js by hand.
+         */
+        val unreadable: Boolean = false
     ) {
         val matched: Boolean get() = method != null
         /** Whichever id was matched, or null. */
@@ -292,7 +305,9 @@ object Match {
         val wantCount: Int,
         val candCount: Int,
         val ok: Boolean = false,
-        val reason: String = ""
+        val reason: String = "",
+        /** See [Result.unreadable]: the check could not be MADE. */
+        val unreadable: Boolean = false
     )
 
     private fun trackTitleSet(titles: List<Track>?): Set<String> {
@@ -356,14 +371,16 @@ object Match {
         // The two "could not check" cases are kept apart from "checked and it
         // disagrees", because they call for different action from the user:
         // one is something to look into, the other is a record that is not
-        // there.
+        // there. They are also flagged `unreadable`, so the engine can count
+        // them as a FAILURE rather than as a miss -- and, crucially, not
+        // cache them. See Migration.corroborate.
         if (a.wantCount == 0) {
-            return a.copy(ok = false, reason =
+            return a.copy(ok = false, unreadable = true, reason =
                 "could not read this album's track listing from the source, so there " +
                 "was nothing to corroborate a title-and-artist match with")
         }
         if (a.candCount == 0) {
-            return a.copy(ok = false, reason =
+            return a.copy(ok = false, unreadable = true, reason =
                 "the other service would not list that album's tracks, so the match " +
                 "could not be corroborated")
         }

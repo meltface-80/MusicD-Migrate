@@ -1,6 +1,7 @@
 package com.musicd.migrate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -323,4 +324,78 @@ class ClientsTest {
             "075992736121", albums[0].upc)
     }
 
+    // -------------------------------------------- an album's track listing
+    //
+    // albumTracks was added to the interface and to both clients for the
+    // corroboration tier -- the thing that decides a barcode-less album --
+    // and NOT ONE of these tests existed. Only the fake was tested, and a
+    // fake agrees with whatever you wrote. On a real library the tier then
+    // refused every album, because the read it depends on silently returned
+    // nothing. The JavaScript twins are in test/unit/clients.test.js.
+
+    @Test fun `a Qobuz album's tracks come from album per get, with no extra parameter`() {
+        // album/get RETURNS THE TRACKS ON ITS OWN. MusicD-Remote -- a Qobuz
+        // client that works -- asks for `{album_id}` and reads `tracks.items`,
+        // and passing an `extra` value the API does not define is a request it
+        // can refuse outright. A refused read is not a visible error here:
+        // safely() turns it into "could not read the track listing" and every
+        // album goes unmatched.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """
+            {"id":"0060254776324","title":"Kind Of Blue","upc":"0060254776324",
+             "tracks_count":5,"artist":{"name":"Miles Davis"},
+             "tracks":{"items":[
+               {"id":1,"title":"So What","duration":545,"isrc":"USSM17700001"},
+               {"id":2,"title":"Freddie Freeloader","duration":574}]}}""")))
+        val qz = QobuzClient(QobuzSession(token = "t"), http, sleeper = {})
+        val tracks = qz.albumTracks("0060254776324")
+
+        assertTrue(http.calls[0].url.contains("album/get"))
+        assertTrue(http.calls[0].url.contains("album_id=0060254776324"))
+        assertFalse("album/get carries the tracks already; an undefined extra risks a refusal",
+            http.calls[0].url.contains("extra="))
+
+        assertEquals(listOf("So What", "Freddie Freeloader"), tracks.map { it.title })
+        assertEquals("Qobuz counts SECONDS", 545_000L, tracks[0].durationMs)
+        assertEquals("USSM17700001", tracks[0].isrc)
+        assertEquals("the album block does not repeat per track, so it is threaded down",
+            "Kind Of Blue", tracks[0].album)
+    }
+
+    @Test fun `a Qobuz album with no tracks block is an empty listing, not a throw`() {
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"id":"x","title":"Nothing"}""")))
+        val qz = QobuzClient(QobuzSession(token = "t"), http, sleeper = {})
+        assertEquals(emptyList<Track>(), qz.albumTracks("x"))
+    }
+
+    @Test fun `a Spotify album's tracks are paged, and carry no ISRC`() {
+        // SimplifiedTrackObject: no external_ids and no album block. Fine for
+        // comparing TITLES against the other side's listing, but a caller must
+        // not expect an ISRC from it.
+        val page1 = (0 until 50).joinToString(",") {
+            """{"id":"t$it","name":"Track $it","duration_ms":200000,
+                "artists":[{"name":"Band"}]}""" }
+        val http = FakeHttp(listOf(
+            FakeHttp.res(200, """{"items":[$page1],"total":52}"""),
+            FakeHttp.res(200, """{"items":[
+                {"id":"t50","name":"Track 50","duration_ms":1000,"artists":[{"name":"Band"}]},
+                {"id":"t51","name":"Track 51","duration_ms":1000,"artists":[{"name":"Band"}]}],
+                "total":52}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        val tracks = sp.albumTracks("sal")
+
+        assertTrue(http.calls[0].url.contains("albums/sal/tracks"))
+        assertEquals("a box set is more than one page", 52, tracks.size)
+        assertEquals("Track 0", tracks[0].title)
+        assertEquals("a simplified track has none", "", tracks[0].isrc)
+    }
+
+    @Test fun `an album id is escaped rather than concatenated`() {
+        // Ids arrive from a search response rather than from us, and a path
+        // built by concatenation is one odd id away from requesting something
+        // else entirely.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"items":[],"total":0}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        sp.albumTracks("a/b?c")
+        assertTrue(http.calls[0].url, http.calls[0].url.contains("albums/a%2Fb%3Fc/tracks"))
+    }
 }
