@@ -143,6 +143,39 @@ class MatchTest {
                 trackCount = 11)).method)
     }
 
+    @Test fun `a refusal names what the other service DID have, by that artist`() {
+        // 1,465 rows of a real report said "no album called X by that artist"
+        // and nothing else, which invites "but I own it, it is definitely on
+        // there". The answer is usually in what came back: the same record
+        // under a longer title, or a different performance.
+        val r = Match.matchAlbum(
+            listOf(Album(id = "a", title = "Rio (Live)", artists = listOf("Keith Jarrett"))),
+            Album(id = "q", title = "Rio", artists = listOf("Keith Jarrett")))
+        assertEquals("a live record is not the studio one", null, r.album)
+        assertTrue(r.reason, r.reason.contains("closest that artist has is \"Rio (Live)\""))
+        assertTrue(r.reason, r.reason.contains("not the same record as \"Rio\""))
+    }
+
+    @Test fun `a refusal says when the album is there but by somebody else`() {
+        // The other shape, and a different thing for the user to do about it:
+        // a covers band, a tribute act, or a tag naming the composer where
+        // the service names the performer.
+        val r = Match.matchAlbum(
+            listOf(Album(id = "a", title = "Rumours", artists = listOf("The Rumour Mill"))),
+            Album(id = "q", title = "Rumours", artists = listOf("Fleetwood Mac")))
+        assertEquals(null, r.album)
+        assertTrue(r.reason, r.reason.contains("but by The Rumour Mill"))
+        assertTrue(r.reason, r.reason.contains("not by Fleetwood Mac"))
+    }
+
+    @Test fun `nothing at all coming back still says exactly that`() {
+        // The third refusal, kept apart from the other two on purpose: there
+        // is nothing for the user to look at.
+        val r = Match.matchAlbum(emptyList(),
+            Album(id = "q", title = "Rumours", artists = listOf("Fleetwood Mac")))
+        assertTrue(r.reason, r.reason.contains("the search returned nothing"))
+    }
+
     @Test fun `an exact album title matches even when track counts are unknown`() {
         assertEquals("exact", Match.matchAlbum(
             listOf(Album(id = "a", title = "Rumours", artists = listOf("Fleetwood Mac"))),

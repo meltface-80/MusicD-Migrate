@@ -1,6 +1,6 @@
 {
-  "version": "0.2.2",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.2.apk",
-  "sha256": "24da7d1ad25a41ab6fdbf5a7e3c045146ceb3cc6bcc385a9ec02246e849e15b3",
-  "notes": "Searches now name ONE artist. Roon writes an album's artists as one slash-joined string and the whole thing went into the query, which found nothing: 457 of the 1,273 albums whose Qobuz search came back empty on a real 9,514-album library were that. A read that failed is reported as a failure rather than as \"not found\", and is never cached. A run whose track-listing check never once works stops and says why, on the page. The CSV download buttons work in the app at last — they did nothing at all from v0.1.0. Previous runs no longer label every Roon run \"Spotify to Qobuz\"."
+  "version": "0.2.3",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.3.apk",
+  "sha256": "442098feaffda4458cbca5c86a1d0eef8ee71b6b8bdae375baeacebea9587028",
+  "notes": "Searches now name ONE artist: Roon writes an album's artists as one slash-joined string and the whole thing went into the query, which was 457 of the 1,273 albums whose Qobuz search came back empty on a real 9,514-album library. An album refusal now quotes what WAS there — the closest record that artist has, or the same album name by somebody else — instead of only \"no album called that\". A read that failed is reported as a failure rather than as \"not found\" and is never cached. A run whose track-listing check never once works stops and says why, on the page. The CSV download buttons work in the app at last. Previous runs no longer label every Roon run \"Spotify to Qobuz\"."
 }
