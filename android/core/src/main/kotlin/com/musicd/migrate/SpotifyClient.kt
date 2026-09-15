@@ -119,17 +119,48 @@ class SpotifyClient(
         }
     }
 
+    /** Held across a refresh so four workers cannot race for a single-use token. */
+    private val tokenLock = Any()
+
+    /**
+     * A valid access token, refreshing at most ONCE however many callers ask.
+     *
+     * The lock is the point, not an optimisation. Spotify ROTATES refresh
+     * tokens: the first refresh invalidates the one it was given. Lookups run
+     * four at a time, so with an expired access token every worker in flight
+     * arrives here at the same moment, and unsynchronised they each refresh
+     * with the same now-single-use token. One wins; the others are told it is
+     * revoked, and a loser's answer can overwrite the winner's — which does
+     * not fail a request, it **destroys the sign-in**, with no way back but
+     * signing in again.
+     *
+     * The second check inside the lock is what makes the losers cheap: they
+     * wake up, see the token the winner just stored, and use it.
+     *
+     * A Qobuz `user_auth_token` neither expires nor rotates, so this cannot
+     * happen on that side — it is exactly the difference between a run into
+     * Qobuz and a run into Spotify.
+     *
+     * Kept in step with accessToken in lib/spotify.js by hand.
+     */
     private fun accessToken(): String {
         if (session.accessToken.isNotEmpty() && session.expiresAt > System.currentTimeMillis()) {
             return session.accessToken
         }
-        if (session.refreshToken.isEmpty()) throw AuthError("Not signed in to Spotify.")
-        val fresh = refresh(http, session.clientId, session.refreshToken)
-        session.accessToken = fresh.accessToken
-        session.refreshToken = fresh.refreshToken
-        session.expiresAt = fresh.expiresAt
-        onTokens(session)
-        return session.accessToken
+        synchronized(tokenLock) {
+            // Someone else may have refreshed while this thread waited.
+            if (session.accessToken.isNotEmpty() &&
+                session.expiresAt > System.currentTimeMillis()) {
+                return session.accessToken
+            }
+            if (session.refreshToken.isEmpty()) throw AuthError("Not signed in to Spotify.")
+            val fresh = refresh(http, session.clientId, session.refreshToken)
+            session.accessToken = fresh.accessToken
+            session.refreshToken = fresh.refreshToken
+            session.expiresAt = fresh.expiresAt
+            onTokens(session)
+            return session.accessToken
+        }
     }
 
     /**

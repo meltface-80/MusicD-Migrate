@@ -5,6 +5,7 @@ import com.musicd.migrate.http.Assets
 import com.musicd.migrate.http.Request
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -146,6 +147,41 @@ class ApiTest {
                          "status", "method", "note")) {
             assertTrue("the page reads item.$k", item.has(k))
         }
+    }
+
+    @Test fun `a run that dies of an ERROR is recorded, not left to kill the app`() {
+        // catch (e: Exception) does not catch an Error. An OutOfMemoryError
+        // sails through it, kills the worker thread, and Android's default
+        // handler kills the process: the app vanishes, the job row says
+        // "running" forever, and there is nothing to say why.
+        val store = MemoryStore()
+        store.createJob("boom", "roon-to-spotify", "{}", false)
+        api(store).runJob("boom") { throw OutOfMemoryError("Failed to allocate 16MB") }
+
+        val j = get(api(store), "/api/jobs").getJSONArray("jobs").getJSONObject(0)
+        assertEquals("failed", j.getString("status"))
+        val err = j.getString("error")
+        assertTrue(err, err.contains("OutOfMemoryError"))
+        assertTrue("the message survives: $err", err.contains("Failed to allocate 16MB"))
+        assertTrue("and the user is told what it cost them: $err",
+            err.contains("anything already written is still there"))
+    }
+
+    @Test fun `a cancelled run and a failed one are told apart`() {
+        val store = MemoryStore()
+        store.createJob("c", "roon-to-qobuz", "{}", false)
+        api(store).runJob("c") { throw Cancelled() }
+        assertEquals("cancelled", store.job("c")!!.status)
+
+        store.createJob("f", "roon-to-qobuz", "{}", false)
+        api(store).runJob("f") { throw RuntimeException("Spotify sign-in has expired") }
+        assertEquals("failed", store.job("f")!!.status)
+        assertEquals("Spotify sign-in has expired", store.job("f")!!.error)
+
+        store.createJob("ok", "roon-to-qobuz", "{}", false)
+        api(store).runJob("ok") { }
+        assertEquals("done", store.job("ok")!!.status)
+        assertNull(store.job("ok")!!.error)
     }
 
     @Test fun `a job listing carries its counts and the fields the page renders`() {

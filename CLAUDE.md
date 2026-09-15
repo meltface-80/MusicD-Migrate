@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 206 tests
+npm test                                                  # 208 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 193 tests
+cd android && ./gradlew :core:test                         # 196 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -304,9 +304,34 @@ directory as-is.
   does not share the browser's cookies, so signing in there means typing a
   password into a window this app controls — the thing the redirect flow exists
   to avoid — and providers may refuse embedded WebViews outright.
-- **Spotify rotates refresh tokens.** A refresh may return a new one, and the
-  old one then stops working. Persist on every refresh (`onTokens`), or a
-  long-lived install loses its sign-in with no way back.
+- **Spotify rotates refresh tokens, and lookups run four at a time.** A
+  refresh may return a new one, and the old one then stops working — so
+  persist on every refresh (`onTokens`), or a long-lived install loses its
+  sign-in with no way back. **The refresh is also SHARED**: an access token
+  lasts an hour and a ten thousand album library does not, so when it expires
+  mid-run every worker in flight reaches `accessToken()` at the same moment.
+  Unsynchronised, they each refresh with the same single-use token; one wins
+  and the rest are told it is revoked, and a loser's answer overwrites the
+  winner's. That does not fail a request — **it destroys the sign-in.** Kotlin
+  holds `tokenLock` and re-checks inside it; JavaScript shares the one
+  in-flight promise and clears it however it settles. A Qobuz
+  `user_auth_token` neither expires nor rotates, which is why this can only
+  ever bite on a run INTO Spotify.
+- **An Error is not an Exception, and `catch (e: Exception)` does not catch
+  one.** An `OutOfMemoryError`, a `StackOverflowError` or a missing class
+  sails straight through, kills the worker thread, and Android's default
+  handler then kills the PROCESS: the app vanishes, the job row says
+  "running" for ever, and there is nothing at all to say why. `MigrateApi
+  .runJob` catches `Throwable` and records it as a failed run naming the
+  Error; it deliberately does not rethrow, because rethrowing puts the process
+  back where it was. **A crash with no evidence costs a release to find.**
+- **The app asks Android why it died last time.** `getHistoricalProcessExit
+  Reasons` (API 30+) in `MainActivity.reportLastExit` keeps the record —
+  including the stack trace for a Java crash or an ANR — and writes it to
+  `Downloads/musicd-crash.txt` with a toast. On a phone there is no adb and no
+  logcat, so without this "it crashed" is the entire bug report. Only an
+  abnormal end is reported (a swipe-away is not a fault), and the timestamp
+  already reported is remembered so one crash is reported once.
 - **A Qobuz `user_auth_token` belongs to the app that minted it.** The `app_id`
   and the token move together; presenting a mismatched pair is a 401 that reads
   exactly like an expired sign-in.

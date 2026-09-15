@@ -692,12 +692,7 @@ class MigrateApi(
         // back now and the page polls /api/job/:id.
         jobs.execute {
             try {
-                migration.run()
-                store.finishJob(jobId, "done", null)
-            } catch (e: Cancelled) {
-                store.finishJob(jobId, "cancelled", null)
-            } catch (e: Exception) {
-                store.finishJob(jobId, "failed", e.message)
+                runJob(jobId) { migration.run() }
             } finally {
                 // Only clear if it is still this job: a cancel followed
                 // immediately by a new migration would otherwise have the old
@@ -707,6 +702,38 @@ class MigrateApi(
         }
 
         return Response.json(200, """{"jobId":${jsonQuote(jobId)}}""")
+    }
+
+    /**
+     * Run a job and record how it ended — including when it ends in an ERROR.
+     *
+     * `catch (e: Exception)` does not catch an Error. An OutOfMemoryError, a
+     * StackOverflowError or a missing class would sail through it, kill this
+     * worker thread, and Android's default handler would then kill the whole
+     * PROCESS: the app disappears, the job row stays "running" forever, and
+     * there is nothing at all to say what happened. A crash with no evidence
+     * costs a release to find; a red row naming the Error costs one reading.
+     *
+     * Split out from the executor lambda only so it can be tested, which the
+     * lambda could not be.
+     */
+    internal fun runJob(jobId: String, body: () -> Unit) {
+        try {
+            body()
+            store.finishJob(jobId, "done", null)
+        } catch (e: Cancelled) {
+            store.finishJob(jobId, "cancelled", null)
+        } catch (e: Exception) {
+            store.finishJob(jobId, "failed", e.message)
+        } catch (t: Throwable) {
+            // Deliberately NOT rethrown. Rethrowing would put the process back
+            // where it was: dead, with the reason only in a logcat nobody on a
+            // phone can read.
+            store.finishJob(jobId, "failed",
+                "the app hit a " + t.javaClass.simpleName +
+                (t.message?.let { ": $it" } ?: "") +
+                ". The run stopped; anything already written is still there.")
+        }
     }
 
     private fun jobsList(): Response =

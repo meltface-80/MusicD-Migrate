@@ -15,6 +15,68 @@ class ClientsTest {
         clientId = "cid", accessToken = "tok", refreshToken = "ref",
         expiresAt = System.currentTimeMillis() + 600_000, userId = "me")
 
+    // ------------------------------------------------------- the token race
+
+    /**
+     * An Http that models Spotify's ROTATING refresh token: presenting the
+     * same one twice is refused, exactly as the real endpoint refuses it.
+     */
+    private class RotatingTokenHttp : Http {
+        val tokenCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        override fun request(
+            method: String, url: String, headers: Map<String, String>, body: ByteArray?,
+            contentType: String?, timeoutMs: Int
+        ): HttpResponse {
+            if (url.contains("/api/token")) {
+                val form = body?.toString(Charsets.UTF_8).orEmpty()
+                val n = tokenCalls.incrementAndGet()
+                // A little latency, so the race is a race rather than a
+                // theory: without the lock the other threads are inside here
+                // before the winner has stored anything.
+                Thread.sleep(50)
+                if (n > 1 && form.contains("refresh_token=ref")) {
+                    return HttpResponse(400, emptyMap(),
+                        """{"error":"invalid_grant","error_description":"Refresh token revoked"}""")
+                }
+                return HttpResponse(200, emptyMap(),
+                    """{"access_token":"AT1","refresh_token":"RT1","expires_in":3600}""")
+            }
+            return HttpResponse(200, emptyMap(), """{"albums":{"items":[]}}""")
+        }
+    }
+
+    @Test fun `four workers hitting an expired token refresh it ONCE between them`() {
+        // Spotify ROTATES refresh tokens: the first refresh invalidates the
+        // one it was given. Lookups run four at a time, so with an expired
+        // access token every worker in flight asks for a refresh at the same
+        // moment -- and without the lock three of them present a token that
+        // has just been revoked. A loser's answer can overwrite the winner's,
+        // which does not fail a request: it destroys the sign-in.
+        //
+        // A Qobuz user_auth_token neither expires nor rotates, which is
+        // exactly why a run into Qobuz never showed this and a run into
+        // Spotify does.
+        val http = RotatingTokenHttp()
+        val saved = java.util.Collections.synchronizedList(ArrayList<SpotifySession>())
+        val sp = SpotifyClient(
+            liveSession().copy(accessToken = "stale",
+                expiresAt = System.currentTimeMillis() - 1000),
+            http, onTokens = { saved.add(it) })
+
+        val errors = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+        val threads = (1..4).map {
+            Thread { try { sp.searchAlbums("a$it", "x") } catch (e: Throwable) { errors.add(e) } }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(20_000) }
+
+        assertEquals("no worker was told its token was revoked: $errors", 0, errors.size)
+        assertEquals("one refresh, shared, not four races for a single-use token",
+            1, http.tokenCalls.get())
+        assertEquals("and the rotated token is the one kept", "RT1", sp.session.refreshToken)
+        assertEquals("persisted once", 1, saved.size)
+    }
+
     // ---------------------------------------------------------------- PKCE
 
     @Test fun `PKCE verifier and challenge are well formed`() {
