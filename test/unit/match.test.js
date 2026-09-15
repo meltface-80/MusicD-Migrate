@@ -146,6 +146,36 @@ test("an exact album title matches even when track counts are unknown", () => {
   assert.strictEqual(r.method, "exact");
 });
 
+test("a refusal names what the other service DID have, by that artist", () => {
+  // 1,465 rows of a real report said "no album called X by that artist" and
+  // nothing else, which invites "but I own it, it is definitely on there".
+  // The answer is usually in what came back: the same record under a longer
+  // title, or a different performance.
+  const r = matchAlbum([{ id: "a", title: "Rio (Live)", artists: ["Keith Jarrett"] }],
+    { title: "Rio", artists: ["Keith Jarrett"] });
+  assert.strictEqual(r.album, null, "a live record is not the studio one");
+  assert.match(r.reason, /closest that artist has is "Rio \(Live\)"/);
+  assert.match(r.reason, /not the same record as "Rio"/);
+});
+
+test("a refusal says when the album is there but by somebody else", () => {
+  // The other shape, and a different thing for the user to do about it: a
+  // covers band, a tribute act, or a tag that names the composer where the
+  // service names the performer.
+  const r = matchAlbum([{ id: "a", title: "Rumours", artists: ["The Rumour Mill"] }],
+    { title: "Rumours", artists: ["Fleetwood Mac"] });
+  assert.strictEqual(r.album, null);
+  assert.match(r.reason, /but by The Rumour Mill/);
+  assert.match(r.reason, /not by Fleetwood Mac/);
+});
+
+test("nothing at all coming back still says exactly that", () => {
+  // The third refusal, kept apart from the other two on purpose: there is
+  // nothing for the user to look at.
+  assert.match(matchAlbum([], { title: "Rumours", artists: ["Fleetwood Mac"] }).reason,
+    /the search returned nothing/);
+});
+
 // ----------------------------------------------------------------- artists
 
 test("artists match on an exact name only", () => {

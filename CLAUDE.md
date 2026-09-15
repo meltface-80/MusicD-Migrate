@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 196 tests
+npm test                                                  # 206 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 183 tests
+cd android && ./gradlew :core:test                         # 193 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -84,7 +84,13 @@ Concretely, and do not relax any of these without a very good argument:
   "The title is there and the length is wrong" means the user owns a different
   edition and can fix it by hand. "Nothing called that" means it is not there.
   Collapsing both into "not found" throws away the difference, and the
-  unmatched report is the actual deliverable of a migration.
+  unmatched report is the actual deliverable of a migration. **A refusal quotes
+  what WAS there**, too: `matchAlbum` has three separate album refusals — the
+  closest record that artist does have, an album of that name by somebody else,
+  and nothing at all — because they ask three different things of the user (fix
+  the tag, accept a different edition, accept that it is missing). 1,465 rows of
+  a real report said only "no album called X by that artist", which invites the
+  entirely reasonable objection "but I own it, it is definitely on there".
 
 ## Two halves, one front-end
 
@@ -235,6 +241,22 @@ directory as-is.
   came back amber "not found", and it read as a library that is not on the other
   service rather than as a thing that was broken. It took a live run, a
   screenshot and an experiment with the check turned off to find.
+- **A SEARCH takes one artist, not everything the source calls the artist.**
+  `searchArtist`, in both languages. Roon writes an album's artists as one
+  slash-joined string — "Carla Bley/Steve Swallow/Andy Sheppard" — and Qobuz
+  hands over a single `performer`; a query naming all three finds nothing on
+  either service. Measured on a real 9,514-album Roon library: **457 of the
+  1,273 albums whose search came back EMPTY had an artist string naming more
+  than one person** (352 slash, 100 ampersand, 16 comma), against 2.0% of the
+  4,639 that matched — eighteen times over-represented among the failures. The
+  GATES were never the problem: `artistSet` and `primaryArtist` split on all of
+  those separators already, so a candidate that came back was compared
+  correctly. Only the query was wrong. So: when a match rate looks bad, check
+  what was actually ASKED before touching what is accepted — and note that the
+  test fakes ignored the artist argument entirely, which is how this passed
+  every test while failing for a sixth of a real library. **A fake that answers
+  a query the real service would refuse is worse than no fake.** Both now model
+  a literal word search.
 - **A check that never once works stops the run.** `UNREADABLE_LIMIT`, in both
   languages: fifty albums that could not be CHECKED with not one success is the
   check being broken, not bad luck, and one album corroborating anywhere

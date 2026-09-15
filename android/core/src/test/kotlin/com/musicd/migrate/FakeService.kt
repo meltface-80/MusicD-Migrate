@@ -86,9 +86,26 @@ open class FakeService(
      */
     var searchAlbumsCarriesUpc = false
 
+    /** Every (title, artist) pair this fake was asked for, in order. */
+    val albumQueriesSeen = java.util.Collections.synchronizedList(
+        ArrayList<Pair<String, String>>())
+
     override fun searchAlbums(title: String, artist: String): List<Album> {
         searchCount.incrementAndGet()
-        val hits = catalogueAlbums.filter { it.title.contains(title, ignoreCase = true) }
+        albumQueriesSeen.add(title to artist)
+        // Both services take ONE free-text query and behave roughly like a
+        // literal word search: every word has to be there somewhere or
+        // nothing comes back. An earlier version of this fake ignored the
+        // artist argument entirely, which is exactly how a query naming three
+        // artists at once -- Roon writes them "A/B/C" -- passed every test
+        // here while returning nothing at all from Qobuz for 352 albums of a
+        // real library.
+        val words = "$title $artist".lowercase()
+            .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        val hits = catalogueAlbums.filter { a ->
+            val hay = (listOf(a.title) + a.artists).joinToString(" ").lowercase()
+            words.all { hay.contains(it) }
+        }
         return if (searchAlbumsCarriesUpc) hits else hits.map { it.copy(upc = "") }
     }
 

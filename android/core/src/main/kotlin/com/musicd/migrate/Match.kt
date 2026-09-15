@@ -247,12 +247,25 @@ object Match {
         data class Scored(val c: Album, val method: String, val score: Double)
         val scored = ArrayList<Scored>()
 
+        // What was actually there, for the refusal to quote. A report row
+        // saying only "no album called that" invites the entirely reasonable
+        // objection "but I own it, it is definitely on there" -- and the
+        // answer is usually visible in what DID come back: the same record
+        // under a longer title, or a different act with the same album name.
+        var nearestByArtist: Album? = null
+        var nearestByArtistSim = -1.0
+        var nearest: Album? = null
+        var nearestSim = -1.0
+
         for (c in list) {
             val cTitle = Canon.canon(c.title)
             if (cTitle.isEmpty()) continue
             val artistOverlap = Canon.overlap(wantArtists, Canon.artistSet(c.artists))
             val samePrimary = wantPrimary == Canon.primaryArtist(c.artists.firstOrNull() ?: "")
+            val sim = Canon.similarity(cTitle, wantTitle)
+            if (sim > nearestSim) { nearest = c; nearestSim = sim }
             if (artistOverlap == 0.0 && !samePrimary) continue
+            if (sim > nearestByArtistSim) { nearestByArtist = c; nearestByArtistSim = sim }
 
             val exact = cTitle == wantTitle
             val close = !exact && Canon.canon(Canon.stripVersion(c.title)) == wantStripped
@@ -271,6 +284,20 @@ object Match {
         }
 
         if (scored.isEmpty()) {
+            // Three different refusals on purpose, because they ask for three
+            // different things from the user: fix the tag, accept a different
+            // edition, or accept that it is not there.
+            nearestByArtist?.let {
+                return Result(reason = "the closest that artist has is \"${it.title}\", " +
+                    "which is not the same record as \"${want.title}\"")
+            }
+            nearest?.let {
+                val theirs = it.artists.filter { a -> a.isNotEmpty() }.joinToString(", ")
+                val ours = want.artists.filter { a -> a.isNotEmpty() }.joinToString(", ")
+                return Result(reason = "something is called \"${it.title}\" there, but by " +
+                    (if (theirs.isEmpty()) "somebody else" else theirs) + " — not by " +
+                    (if (ours.isEmpty()) "that artist" else ours))
+            }
             return Result(reason =
                 "no album called \"${want.title}\" by that artist on the other service")
         }

@@ -287,6 +287,23 @@ test("a browse that answers with no list at all is an error", async () => {
 
 // ------------------------------------------------------- reading the albums
 
+test("a trio filed under one slash-joined name comes back as three artists", async () => {
+  // This is how Roon hands over an album with several album artists, and the
+  // engine searches on artists[0]. Handing it one string containing all three
+  // is how 352 albums of a real library were searched for as
+  // "Andando el Tiempo Carla Bley/Steve Swallow/Andy Sheppard", which finds
+  // nothing anywhere. The report label reads properly as a side effect.
+  const core = scriptedCore({ albums: [
+    album("Andando el Tiempo", "Carla Bley/Steve Swallow/Andy Sheppard")] });
+  const store = tmpStore();
+  const client = new RoonClient({ core, store });
+  await client.scan();
+
+  const albums = await client.savedAlbums();
+  assert.deepStrictEqual(albums[0].artists,
+    ["Carla Bley", "Steve Swallow", "Andy Sheppard"]);
+});
+
 test("the scanned albums come back with no barcode and an honest null count", async () => {
   const core = scriptedCore({ albums: [album("Kind Of Blue", "Miles Davis")] });
   const store = tmpStore();
