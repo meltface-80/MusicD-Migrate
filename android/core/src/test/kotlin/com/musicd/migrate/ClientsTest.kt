@@ -15,6 +15,106 @@ class ClientsTest {
         clientId = "cid", accessToken = "tok", refreshToken = "ref",
         expiresAt = System.currentTimeMillis() + 600_000, userId = "me")
 
+    // ----------------------------------------------------------- the heap
+
+    /**
+     * An Http that answers with REAL-SHAPED Spotify album pages and watches
+     * the heap between them.
+     *
+     * Sampling between pages is the whole trick: what killed the app was the
+     * PEAK during the walk, not what was left at the end. A pager that
+     * collects raw pages and lets the caller map them afterwards looks
+     * innocent once it has returned.
+     */
+    private class HeapWatchingHttp(private val pages: Int, private val per: Int) : Http {
+        var requests = 0
+        var peakBytes = 0L
+        private val baseline: Long
+
+        init {
+            baseline = used()
+        }
+
+        private fun used(): Long {
+            val rt = Runtime.getRuntime()
+            // Weakly-reachable garbage is not the thing being measured.
+            System.gc()
+            Thread.sleep(10)
+            System.gc()
+            return rt.totalMemory() - rt.freeMemory()
+        }
+
+        override fun request(
+            method: String, url: String, headers: Map<String, String>, body: ByteArray?,
+            contentType: String?, timeoutMs: Int
+        ): HttpResponse {
+            val grew = used() - baseline
+            if (grew > peakBytes) peakBytes = grew
+            requests++
+            if (requests > pages) return HttpResponse(200, emptyMap(), """{"items":[],"total":0}""")
+            return HttpResponse(200, emptyMap(), page((requests - 1) * per))
+        }
+
+        /**
+         * One page of `/me/albums`, shaped like the real thing.
+         *
+         * `available_markets` is the point. Spotify sends about 180 country
+         * codes on the album AND on every track of it unless a `market` is
+         * given, which is what makes one saved album some 15KB of JSON.
+         */
+        private fun page(from: Int): String {
+            val markets = (1..180).joinToString(",") { "\"M$it\"" }
+            val sb = StringBuilder(per * 16000)
+            sb.append("{\"total\":").append(pages * per).append(",\"items\":[")
+            for (i in 0 until per) {
+                val n = from + i
+                if (i > 0) sb.append(',')
+                sb.append("{\"added_at\":\"2024-01-01T00:00:00Z\",\"album\":{")
+                sb.append("\"id\":\"al$n\",\"name\":\"Album Number $n\",")
+                sb.append("\"total_tracks\":12,\"external_ids\":{\"upc\":\"00000000000$n\"},")
+                sb.append("\"artists\":[{\"id\":\"ar$n\",\"name\":\"Artist $n\"}],")
+                sb.append("\"available_markets\":[").append(markets).append("],")
+                sb.append("\"tracks\":{\"items\":[")
+                for (t in 1..12) {
+                    if (t > 1) sb.append(',')
+                    sb.append("{\"id\":\"t$n-$t\",\"name\":\"Track $t of album $n\",")
+                    sb.append("\"duration_ms\":210000,\"available_markets\":[")
+                    sb.append(markets).append("]}")
+                }
+                sb.append("]}}}")
+            }
+            sb.append("]}")
+            return sb.toString()
+        }
+    }
+
+    @Test fun `walking a big library does not hold every page in memory`() {
+        // What this is about, from a real phone running 0.2.3:
+        //
+        //   the app hit a OutOfMemoryError: Failed to allocate a 664 byte
+        //   allocation with 351648 free bytes and 343KB until OOM, target
+        //   footprint 268435456, growth limit 268435456; giving up on
+        //   allocation because <1% of heap free after GC
+        //
+        // A 256MB heap, gone before the run had matched a single album. It was
+        // reading the target's saved albums: /me/albums returns the FULL album
+        // object, ~15KB of JSON each once available_markets is counted, and
+        // the pager kept every page until the walk finished.
+        val http = HeapWatchingHttp(pages = 30, per = 50)
+        val sp = SpotifyClient(liveSession(), http)
+
+        val albums = sp.savedAlbums()
+
+        assertEquals("every album still comes back", 1500, albums.size)
+        assertEquals("Album Number 0", albums[0].title)
+        assertEquals("and mapped, not raw", "al1499", albums[1499].id)
+        val mb = http.peakBytes / (1024 * 1024)
+        assertTrue(
+            "the walk should stay small: 1,500 albums is about a megabyte of " +
+            "Album objects, against ~22MB of JSON to parse. Peak growth was ${mb}MB",
+            http.peakBytes < 40L * 1024 * 1024)
+    }
+
     // ------------------------------------------------------- the token race
 
     /**

@@ -221,17 +221,41 @@ class SpotifyClient(
         }
     }
 
-    /** Walk an offset-paged collection to the end. */
-    private fun pageAll(
-        path: String, params: Map<String, Any?> = emptyMap(), limit: Int = 50
-    ): List<JSONObject> {
-        val out = ArrayList<JSONObject>()
+    /**
+     * Walk an offset-paged collection to the end, keeping only what `map`
+     * returns.
+     *
+     * The mapper is not a convenience: it is what stops this holding the
+     * whole library's raw JSON at once. Spotify's `/me/albums` returns the
+     * FULL album object, and a full album object carries `available_markets`
+     * — about 180 country codes — on the album AND on every one of its
+     * tracks. That is roughly 15KB of JSON for one saved album, and org.json
+     * parses it into several times that in objects.
+     *
+     * An earlier version returned `List<JSONObject>` and let the caller map
+     * afterwards, which meant every page stayed live until the walk finished.
+     * On a real phone that is what happened:
+     *
+     *     the app hit a OutOfMemoryError: … target footprint 268435456,
+     *     growth limit 268435456; giving up on allocation because <1% of
+     *     heap free after GC
+     *
+     * A 256MB heap, and it never got as far as matching anything. Mapping
+     * inside the loop keeps ONE page live at a time — a `Track` or an `Album`
+     * is a few hundred bytes against fifty-odd kilobytes for the JSON it came
+     * from, so the walk costs about a thousandth of what it did.
+     */
+    private fun <T> pageAll(
+        path: String, params: Map<String, Any?> = emptyMap(), limit: Int = 50,
+        map: (JSONObject) -> T?
+    ): List<T> {
+        val out = ArrayList<T>()
         var offset = 0
         while (true) {
             val page = request("GET", path, params + mapOf("limit" to limit, "offset" to offset))
             val items = page?.arrOrNull("items")?.objects().orEmpty()
             if (items.isEmpty()) break
-            out.addAll(items)
+            for (item in items) map(item)?.let { out.add(it) }
             offset += items.size
             val total = page?.intOrNull("total")
             if (total != null && offset >= total) break
@@ -250,7 +274,7 @@ class SpotifyClient(
         return Account(session.userId, session.name)
     }
 
-    override fun playlists(): List<Playlist> = pageAll("/me/playlists").map { p ->
+    override fun playlists(): List<Playlist> = pageAll("/me/playlists") { p ->
         Playlist(
             id = p.str("id"),
             name = p.str("name"),
@@ -267,15 +291,16 @@ class SpotifyClient(
         val fields = "total,items(is_local,track(id,name,duration_ms,type," +
             "artists(name),album(name),external_ids(isrc)))"
         return pageAll("/playlists/${urlEncode(playlistId)}/tracks",
-            mapOf("fields" to fields, "additional_types" to "track"), 100)
-            .mapNotNull { fromPlaylistItem(it) }
+            mapOf("fields" to fields, "additional_types" to "track"), 100) {
+            fromPlaylistItem(it)
+        }
     }
 
     override fun savedTracks(): List<Track> =
-        pageAll("/me/tracks").mapNotNull { toTrack(it.objOrNull("track")) }
+        pageAll("/me/tracks") { toTrack(it.objOrNull("track")) }
 
     override fun savedAlbums(): List<Album> =
-        pageAll("/me/albums").mapNotNull { toAlbum(it.objOrNull("album")) }
+        pageAll("/me/albums") { toAlbum(it.objOrNull("album")) }
 
     /**
      * Followed artists page by CURSOR, not offset — the one endpoint here that
@@ -379,7 +404,7 @@ class SpotifyClient(
      * track.
      */
     override fun albumTracks(albumId: String): List<Track> =
-        pageAll("/albums/${urlEncode(albumId)}/tracks").mapNotNull { toTrack(it) }
+        pageAll("/albums/${urlEncode(albumId)}/tracks") { toTrack(it) }
 
     // ----------------------------------------------------------------- writes
 
