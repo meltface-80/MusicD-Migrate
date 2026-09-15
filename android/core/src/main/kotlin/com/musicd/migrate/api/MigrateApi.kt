@@ -2,6 +2,15 @@ package com.musicd.migrate.api
 
 import com.musicd.migrate.*
 import com.musicd.migrate.http.Assets
+import com.musicd.migrate.roon.BrowseApi
+import com.musicd.migrate.roon.RoonClient
+import com.musicd.migrate.roon.RoonCore
+import com.musicd.migrate.roon.RoonDiscovery
+import com.musicd.migrate.roon.RoonExtension
+import com.musicd.migrate.roon.RoonScanSummary
+import com.musicd.migrate.roon.RoonStage
+import com.musicd.migrate.roon.SoodDiscovery
+import com.musicd.migrate.roon.StoreRoonMemory
 import com.musicd.migrate.http.Request
 import com.musicd.migrate.http.Response
 import org.json.JSONArray
@@ -29,7 +38,17 @@ class MigrateApi(
     private val store: Store,
     private val assets: Assets,
     private val http: Http = UrlConnectionHttp(),
-    private val version: String = "0.1.0"
+    private val version: String = "0.1.0",
+    /**
+     * How a Roon Core is found.
+     *
+     * Injectable because on ANDROID it must hold a WifiManager multicast lock
+     * while it listens: the platform filters multicast out of userspace
+     * without one, so SOOD replies never arrive and discovery reports no Core
+     * on a network that has one. The app module supplies a discovery that
+     * takes the lock; :core cannot, because it must not depend on the SDK.
+     */
+    private val roonDiscovery: RoonDiscovery = SoodDiscovery()
 ) {
     /** The live migration, or null. */
     @Volatile private var current: Migration? = null
@@ -127,6 +146,12 @@ class MigrateApi(
                 ok()
             }
 
+            p == "/api/roon/connect" && req.method == "POST" -> roonConnect(req)
+            p == "/api/roon/forget" && req.method == "POST" -> roonForget()
+            p == "/api/roon/scan" && req.method == "POST" -> roonScanStart(req)
+            p == "/api/roon/scan/cancel" && req.method == "POST" -> roonScanCancel()
+            p == "/api/roon/library.csv" -> roonLibraryCsv()
+
             p == "/api/playlists" -> playlists(req)
             p == "/api/migrate" && req.method == "POST" -> migrate(req)
             p == "/api/jobs" -> jobsList()
@@ -194,6 +219,7 @@ class MigrateApi(
             append(",\"redirectUri\":").append(jsonQuote(redirect))
             append(",\"redirectCheck\":{\"ok\":").append(check.ok)
             append(",\"reason\":").append(jsonQuote(check.reason)).append("}},")
+            append("\"roon\":").append(roonStateJson()).append(",")
             append("\"cacheSize\":").append(store.matchCacheSize()).append(",")
             append("\"job\":")
             val jid = currentJobId
@@ -351,10 +377,226 @@ class MigrateApi(
         saveSpotify(tokens)
     }
 
+    // ---------------------------------------------------------------- Roon
+
+    /*
+     * Created LAZILY and never on startup. Pairing means broadcasting on the
+     * user's network and asking them to enable an extension, and a copy of
+     * this app used only for Qobuz and Spotify should do neither. The first
+     * press of "Find my Roon Core" is what brings it into existence.
+     */
+    @Volatile private var roon: RoonCore? = null
+    @Volatile private var roonScanning = false
+    @Volatile private var roonCancelScan = false
+    @Volatile private var roonProgress: IntArray? = null
+
+    private fun roonCore(): RoonCore {
+        roon?.let { return it }
+        synchronized(this) {
+            roon?.let { return it }
+            val core = RoonCore(
+                memory = StoreRoonMemory(store),
+                discovery = roonDiscovery,
+                extension = RoonExtension(version = version)
+            )
+            roon = core
+            return core
+        }
+    }
+
+    private fun roonClient(core: BrowseApi): RoonClient = RoonClient(core, store)
+
+    /**
+     * What the page shows for Roon. Reads only — asking for the state must
+     * never start a connection, or a page refresh would broadcast on the
+     * user's network.
+     */
+    private fun roonStateJson(): String {
+        val core = roon
+        if (core == null) {
+            return "{\"stage\":\"idle\",\"detail\":\"\",\"paired\":false," +
+                "\"albums\":0,\"scan\":null,\"scanning\":false,\"progress\":null," +
+                "\"scanError\":null}"
+        }
+        val st = core.status
+        val coreId = core.coreId ?: "roon"
+        val saved = store.roonScan()?.takeIf { it.coreId == coreId }
+        val p = roonProgress
+        return buildString {
+            append("{\"stage\":").append(jsonQuote(st.stage))
+            append(",\"detail\":").append(jsonQuote(st.detail))
+            append(",\"coreName\":").append(jsonQuote(st.coreName.orEmpty()))
+            append(",\"host\":").append(jsonQuote(st.host.orEmpty()))
+            append(",\"port\":").append(st.port)
+            append(",\"paired\":").append(st.paired)
+            append(",\"albums\":").append(store.roonAlbumCount(coreId))
+            append(",\"scanning\":").append(roonScanning)
+            append(",\"scan\":").append(saved?.let { scanJson(it) } ?: "null")
+            // A scan that stopped for a reason says the reason. Without this
+            // the page shows "nothing scanned yet" after a failure, which
+            // reads as an empty library rather than as something that broke.
+            val err = store.setting("roon.scanError")
+            append(",\"scanError\":").append(if (err == null) "null" else jsonQuote(err))
+            append(",\"progress\":")
+            if (p == null) append("null") else append("{\"done\":").append(p[0])
+                .append(",\"total\":").append(p[1])
+                .append(",\"stored\":").append(p[2])
+                .append(",\"duplicates\":").append(p[3]).append("}")
+            append("}")
+        }
+    }
+
+    private fun scanJson(s: RoonScanSummary): String =
+        "{\"coreId\":" + jsonQuote(s.coreId) + ",\"offset\":" + s.offset +
+        ",\"total\":" + s.total + ",\"stored\":" + s.stored +
+        ",\"duplicates\":" + s.duplicates + ",\"done\":" + s.done + "}"
+
+    /**
+     * Start pairing. Returns at once and the page polls /api/state: on a FIRST
+     * pair Roon answers "Registered" only once the user has enabled the
+     * extension, and a request held open for that is a request that times out.
+     */
+    private fun roonConnect(req: Request): Response {
+        val b = parseObject(req.bodyText) ?: JSONObject()
+        val host = b.str("host").trim()
+        val port = b.intOrNull("port") ?: 0
+        return try {
+            val core = roonCore()
+            if (host.isNotEmpty()) core.connectTo(host, if (port > 0) port else 9330)
+            else core.start()
+            ok()
+        } catch (e: Exception) {
+            Response.json(500, obj("error" to (e.message ?: "Could not start")))
+        }
+    }
+
+    private fun roonForget(): Response {
+        roon?.rediscover()
+        return ok()
+    }
+
+    /**
+     * Walk the library and store it, in the background — ten thousand albums
+     * is a hundred round trips to the Core, and the page shows progress rather
+     * than waiting on one request.
+     */
+    private fun roonScanStart(req: Request): Response {
+        if (roonScanning) {
+            return Response.json(409, obj("error" to "A Roon scan is already running."))
+        }
+        val core = roon
+        if (core == null || !core.isPaired) {
+            return Response.json(400, obj("error" to "Pair with a Roon Core first."))
+        }
+        val resume = (parseObject(req.bodyText) ?: JSONObject()).optBoolean("resume", false)
+        roonScanning = true
+        roonCancelScan = false
+        roonProgress = intArrayOf(0, 0, 0, 0)
+        Thread({
+            try {
+                roonClient(core).scan(
+                    resume = resume,
+                    cancelled = { roonCancelScan },
+                    onProgress = { done, total, stored, dupes ->
+                        roonProgress = intArrayOf(done, total, stored, dupes)
+                    })
+            } catch (e: Exception) {
+                // Kept where the page can read it rather than thrown away: a
+                // scan that stopped for a reason must say the reason.
+                store.putSetting("roon.scanError", e.message ?: "The scan failed.")
+            } finally {
+                roonScanning = false
+                roonProgress = null
+            }
+        }, "roon-scan").apply { isDaemon = true }.start()
+        return ok()
+    }
+
+    private fun roonScanCancel(): Response {
+        if (!roonScanning) return Response.json(404, obj("error" to "No Roon scan is running."))
+        roonCancelScan = true
+        return ok()
+    }
+
+    /**
+     * The scanned library, as a spreadsheet.
+     *
+     * The actual deliverable of a Roon scan: not "it worked", but a row per
+     * album saying whether it was found on each service and, when it was not,
+     * WHY. The reasons come out of the match cache.
+     */
+    private fun roonLibraryCsv(): Response {
+        val coreId = roon?.coreId ?: "roon"
+        val rows = store.roonAlbums(coreId)
+        if (rows.isEmpty()) {
+            return Response.text(404, "No Roon library has been scanned yet.")
+        }
+        val out = StringBuilder("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey")
+        for (r in rows) {
+            val sp = store.cachedMatch("roon", r.albumKey, "spotify", "album")
+            val qz = store.cachedMatch("roon", r.albumKey, "qobuz", "album")
+            out.append("\r\n").append(listOf(
+                r.artist, r.title, r.trackCount?.toString().orEmpty(),
+                sp?.toId.orEmpty(), if (sp != null && sp.toId == null) sp.method else "",
+                qz?.toId.orEmpty(), if (qz != null && qz.toId == null) qz.method else "",
+                r.albumKey
+            ).joinToString(",") { csvCell(it) })
+        }
+        return Response.bytes(200, "text/csv; charset=utf-8",
+            out.toString().toByteArray(Charsets.UTF_8),
+            mapOf("Content-Disposition" to "attachment; filename=\"roon-library.csv\""))
+    }
+
     // ------------------------------------------------------------- library
+
+    /**
+     * Every direction this app will run, and which service is which end.
+     *
+     * Roon appears only on the left. There is no way to write an album into
+     * somebody's local library — the file would have to exist first — and
+     * Model.kt enforces it: RoonClient is a MusicSource and is not a
+     * MusicTarget, so "spotify-to-roon" would not compile, let alone run. It
+     * is simply not offered. Kept in step with DIRECTIONS in index.js.
+     */
+    private val DIRECTIONS = mapOf(
+        "qobuz-to-spotify" to ("qobuz" to "spotify"),
+        "spotify-to-qobuz" to ("spotify" to "qobuz"),
+        "roon-to-spotify" to ("roon" to "spotify"),
+        "roon-to-qobuz" to ("roon" to "qobuz")
+    )
+
+    /**
+     * A client for one end, or a refusal saying what is missing.
+     *
+     * Throws rather than returning null so the caller cannot forget to check:
+     * the message is what the user is shown, and "Sign in to Spotify first" is
+     * more use than a 500.
+     */
+    private fun sourceFor(name: String): MusicSource {
+        if (name != "roon") return targetFor(name)
+        val core = roon
+        if (core == null || !core.isPaired) throw RuntimeException("Pair with a Roon Core first.")
+        if (store.roonAlbumCount(core.coreId ?: "roon") == 0) {
+            throw RuntimeException("Scan your Roon library first \u2014 a migration reads the " +
+                "scan, not the Core, so it would otherwise look as though you owned nothing.")
+        }
+        return roonClient(core)
+    }
+
+    private fun targetFor(name: String): MusicTarget = when (name) {
+        "qobuz" -> qobuzClient() ?: throw RuntimeException("Sign in to Qobuz first.")
+        "spotify" -> spotifyClient() ?: throw RuntimeException("Sign in to Spotify first.")
+        else -> throw RuntimeException("Unknown service: $name")
+    }
 
     private fun playlists(req: Request): Response {
         val which = req.param("service").orEmpty()
+        if (which == "roon") {
+            // Answered with the REASON rather than an empty list. An empty
+            // list reads as "you have no playlists"; the truth is that this
+            // app will not migrate them.
+            return Response.json(400, obj("error" to RoonClient.UNSUPPORTED_PLAYLISTS))
+        }
         val client: MusicTarget? = when (which) {
             "qobuz" -> qobuzClient()
             "spotify" -> spotifyClient()
@@ -390,16 +632,21 @@ class MigrateApi(
             return Response.json(409, obj("error" to "A migration is already running."))
         }
         val b = parseObject(req.bodyText) ?: JSONObject()
-        val direction = if (b.str("direction") == "spotify-to-qobuz") "spotify-to-qobuz"
-                        else "qobuz-to-spotify"
+        val asked = b.str("direction")
+        val direction = if (DIRECTIONS.containsKey(asked)) asked else "qobuz-to-spotify"
+        val (fromName, toName) = DIRECTIONS.getValue(direction)
 
-        val qz = qobuzClient()
-            ?: return Response.json(400, obj("error" to "Sign in to Qobuz first."))
-        val sp = spotifyClient()
-            ?: return Response.json(400, obj("error" to "Sign in to Spotify first."))
-
-        val source: MusicSource = if (direction == "qobuz-to-spotify") qz else sp
-        val target: MusicTarget = if (direction == "qobuz-to-spotify") sp else qz
+        // Only the two services actually involved have to be signed in.
+        // Requiring both for a Roon migration would refuse a run that needs
+        // neither the other service's tokens nor its catalogue.
+        val source: MusicSource
+        val target: MusicTarget
+        try {
+            source = sourceFor(fromName)
+            target = targetFor(toName)
+        } catch (e: Exception) {
+            return Response.json(400, obj("error" to (e.message ?: "Not signed in.")))
+        }
 
         // `playlists` is either a boolean or an array of ids — the page sends
         // both shapes, so both are read here.

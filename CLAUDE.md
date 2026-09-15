@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 181 tests
+npm test                                                  # 190 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 133 tests
+cd android && ./gradlew :core:test                         # 177 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -124,6 +124,23 @@ directory as-is.
   `test/unit/roon-socket.test.js` drives a real handshake over a hand-rolled
   RFC 6455 server on loopback, which is what catches that. The Dockerfile and
   CI are on 22.
+- **Roon reaches the Core over a RAW SOCKET, and that is load-bearing on
+  Android.** The app's network security config permits cleartext to loopback
+  and nowhere else, but a Roon Core is a plain `ws://` on the LAN. Android's
+  cleartext policy is enforced by the HTTP LIBRARIES — HttpURLConnection,
+  OkHttp, WebView — and not by `java.net.Socket` or `DatagramSocket`, so
+  `RawWebSocketFactory` and `SoodDiscovery` are unaffected by it. Writing the
+  WebSocket by hand was done because `:core` has no dependencies; keeping it
+  that way is also what lets the cleartext exemption stay scoped to loopback.
+  **Do not replace it with an HTTP library**: Roon would stop working on the
+  phone, and widening the exemption to fix that would permit cleartext to
+  every destination for an app that holds two services' access tokens.
+- **Android filters multicast out of userspace** unless the app holds a
+  `WifiManager` multicast lock, so SOOD discovery needs one or a network with
+  a Roon Core on it reports none. `WifiMulticastLock` in `MigrateService.kt`
+  holds it, `CHANGE_WIFI_MULTICAST_STATE` is in the manifest, and
+  `MigrateApi` takes the discovery as a parameter only so the app can supply
+  it — `:core` must not depend on the SDK.
 - **There is no Roon Core in CI, in Docker, or in the container this was
   written in.** So `lib/roon-core.js` takes the socket, the discovery and the
   token store as seams, and the tests drive a scripted Core and assert on the

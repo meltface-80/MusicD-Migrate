@@ -152,10 +152,18 @@ class Migration(
             val existing = readExisting()
             checkCancelled()
 
-            if (options.doTracks) migrateSavedTracks(existing)
-            if (options.doAlbums) migrateSavedAlbums(existing)
-            if (options.doArtists) migrateArtists(existing)
-            if (options.doPlaylists) migratePlaylists()
+            if (options.doTracks && !refuseUnsupported("tracks", "track")) {
+                migrateSavedTracks(existing)
+            }
+            if (options.doAlbums && !refuseUnsupported("albums", "album")) {
+                migrateSavedAlbums(existing)
+            }
+            if (options.doArtists && !refuseUnsupported("artists", "artist")) {
+                migrateArtists(existing)
+            }
+            if (options.doPlaylists && !refuseUnsupported("playlists", "playlist")) {
+                migratePlaylists()
+            }
 
             flush()
             report(phase = "done", label = "Finished")
@@ -506,6 +514,21 @@ class Migration(
             if (id != null) result?.method ?: "" else result?.reason ?: "not found")
         return if (id != null) Resolved(id, result?.method, result?.reason ?: "")
                else Resolved(null, null, result?.reason ?: "not found")
+    }
+
+    /**
+     * Some sources cannot offer some kinds of thing at all, and say so.
+     *
+     * The twin of refuseUnsupported in lib/migrate.js. Roon is why: a Roon
+     * track carries no length, so it can never be matched safely, and neither
+     * can a Roon playlist. Returning an empty list would finish the run green
+     * having migrated nothing; the reason is RECORDED instead, as a skipped
+     * row in the report the user actually reads.
+     */
+    private fun refuseUnsupported(kind: String, rowKind: String): Boolean {
+        val why = source.unsupported[kind] ?: return false
+        record(JobItem(rowKind, "-", "$sourceName $kind", "skipped", note = why))
+        return true
     }
 
     fun resolveAlbum(a: Album): Resolved {

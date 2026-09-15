@@ -263,4 +263,75 @@ class ApiTest {
         assertEquals("http://127.0.0.1:3380/login", pending.str("redirectUri"))
     }
 
+    // ---------------------------------------------------------------- Roon
+    //
+    // The same assertions test/unit/server.test.js makes on the Node side. No
+    // Roon Core is contacted: every one of these is either refused before a
+    // packet would leave, or reads rows the test put in the store itself.
+
+    @Test fun `asking for the state never starts looking for a Roon Core`() {
+        // A page refresh must not broadcast on somebody's network. The Roon
+        // client is created on the first press of "Find my Roon Core".
+        val j = get(api(), "/api/state").getJSONObject("roon")
+        assertEquals("idle", j.getString("stage"))
+        assertEquals(false, j.getBoolean("paired"))
+        assertEquals(0, j.getInt("albums"))
+        assertTrue(j.isNull("scan"))
+    }
+
+    @Test fun `a scan is refused until there is a Core to scan`() {
+        val res = post(api(), "/api/roon/scan")
+        assertEquals(400, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("Pair with a Roon Core"))
+    }
+
+    @Test fun `migrating from Roon is refused with the step that is missing`() {
+        val res = post(api(), "/api/migrate",
+            """{"direction":"roon-to-spotify","albums":true,"dryRun":true}""")
+        assertEquals(400, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("Pair with a Roon Core"))
+    }
+
+    @Test fun `Roon is never offered as a destination`() {
+        // There is no way to put an album into somebody's local library. An
+        // unknown direction falls back to the default rather than inventing
+        // one, and the refusal that follows names Qobuz, not Roon.
+        val res = post(api(), "/api/migrate",
+            """{"direction":"spotify-to-roon","albums":true,"dryRun":true}""")
+        assertEquals(400, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("Qobuz"))
+    }
+
+    @Test fun `asking Roon for playlists answers with the reason, not an empty list`() {
+        val res = raw(api(), "GET", "/api/playlists?service=roon")
+        assertEquals(400, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("no length to match it on"))
+    }
+
+    @Test fun `the library CSV says there is no scan rather than sending an empty file`() {
+        val res = raw(api(), "GET", "/api/roon/library.csv")
+        assertEquals(404, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("has been scanned yet"))
+    }
+
+    @Test fun `the library CSV carries the albums and what each was matched to`() {
+        val store: Store = MemoryStore()
+        store.saveRoonAlbums("roon", listOf(
+            RoonAlbumRow("ra_one", "Kind Of Blue", "Miles Davis", 0),
+            RoonAlbumRow("ra_two", "-Minus", "Someone", 1)))
+        store.setRoonAlbumTrackCount("roon", "ra_one", 5)
+        store.cacheMatch("roon", "ra_one", "spotify", "album", "spAlbum1", "exact+tracklist")
+        store.cacheMatch("roon", "ra_two", "spotify", "album", null,
+            "an album of that name is there but its track listing does not agree")
+
+        val res = raw(api(store), "GET", "/api/roon/library.csv")
+        assertEquals(200, res.status)
+        assertTrue(res.contentType.contains("text/csv"))
+        val lines = res.body.toString(Charsets.UTF_8).split("\r\n")
+        assertEquals("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey", lines[0])
+        assertEquals("Miles Davis,Kind Of Blue,5,spAlbum1,,,,ra_one", lines[1])
+        // A title beginning with "-" is executed as a formula by Excel.
+        assertTrue("CSV injection guard: ${lines[2]}", lines[2].startsWith("Someone,'-Minus,"))
+        assertTrue(lines[2].contains("track listing does not agree"))
+    }
 }

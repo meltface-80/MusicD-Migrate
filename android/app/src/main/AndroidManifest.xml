@@ -3,6 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      Roon discovery is a UDP multicast, and Android filters multicast out of
+      userspace unless the app holds a WifiManager multicast lock. Without
+      this permission the lock cannot be taken, the SOOD replies never arrive,
+      and a network with a Roon Core on it reports none. See WifiMulticastLock
+      in MigrateService.kt.
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!--
       A migration of a real library takes minutes — thousands of searches

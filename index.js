@@ -29,6 +29,8 @@ const PKCE = require("./lib/spotify-pkce");
 const { Qobuz } = require("./lib/qobuz");
 const { Spotify, exchangeCode } = require("./lib/spotify");
 const { Migration } = require("./lib/migrate");
+const { RoonCore, STAGE: ROON_STAGE } = require("./lib/roon-core");
+const { RoonClient } = require("./lib/roon");
 
 for (const level of ["log", "warn", "error"]) {
   const orig = console[level].bind(console);
@@ -84,6 +86,52 @@ app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
 /** The live migration, or null. See the note at the top about one at a time. */
 let current = null;
 
+/**
+ * Every direction this app will run, and which service is which end.
+ *
+ * Roon appears only on the left. There is no way to write an album into
+ * somebody's local library — the file would have to exist first — and
+ * lib/service.js enforces that: a Roon client is a MusicSource and is not a
+ * MusicTarget, so "spotify-to-roon" would be refused before a single request.
+ * It is simply not offered.
+ */
+const DIRECTIONS = {
+  "qobuz-to-spotify": ["qobuz", "spotify"],
+  "spotify-to-qobuz": ["spotify", "qobuz"],
+  "roon-to-spotify": ["roon", "spotify"],
+  "roon-to-qobuz": ["roon", "qobuz"],
+};
+
+/**
+ * A client for one end of a migration, or a refusal saying what is missing.
+ *
+ * Throws rather than returning null so the caller cannot forget to check: the
+ * message is what the user is shown, and "Sign in to Spotify first" is more
+ * use than a 500.
+ */
+function clientFor(name) {
+  if (name === "qobuz") {
+    const c = qobuzClient();
+    if (!c) throw new Error("Sign in to Qobuz first.");
+    return c;
+  }
+  if (name === "spotify") {
+    const c = spotifyClient();
+    if (!c) throw new Error("Sign in to Spotify first.");
+    return c;
+  }
+  if (name === "roon") {
+    if (!roon || !roon.isPaired) throw new Error("Pair with a Roon Core first.");
+    const coreId = roon.coreId || "roon";
+    if (!store.roonAlbumCount(coreId)) {
+      throw new Error("Scan your Roon library first — a migration reads the scan, " +
+        "not the Core, so it would otherwise look as though you owned nothing.");
+    }
+    return roonClient();
+  }
+  throw new Error("Unknown service: " + name);
+}
+
 function qobuzClient() {
   const s = store.get("qobuz.session");
   if (!s || !s.token) return null;
@@ -104,6 +152,64 @@ function spotifyClient() {
   });
 }
 
+/*
+ * Roon.
+ *
+ * Created LAZILY and never on startup. Pairing means broadcasting on the
+ * user's network and asking them to enable an extension, and a copy of this
+ * app used only for Qobuz and Spotify should do neither. The first press of
+ * "Find my Roon Core" is what brings it into existence.
+ */
+let roon = null;
+/** The running library scan, or null. One at a time, like a migration. */
+let roonScan = null;
+
+function roonCore() {
+  if (roon) return roon;
+  roon = new RoonCore({
+    extension: { display_version: require("./package.json").version },
+    store: {
+      tokenFor: (coreId) => store.get("roon.token." + coreId, null),
+      saveToken: (coreId, token) => store.put("roon.token." + coreId, token),
+      lastCore: () => store.get("roon.lastCore", null),
+      saveLastCore: (host, port) => store.put("roon.lastCore", { host, port }),
+      forgetLastCore: () => store.del("roon.lastCore"),
+    },
+    log: (line) => console.log("[roon]", line),
+  });
+  return roon;
+}
+
+function roonClient() {
+  const core = roonCore();
+  return new RoonClient({ core, store, coreId: () => core.coreId || "roon",
+                          log: (line) => console.log("[roon]", line) });
+}
+
+/**
+ * What the page shows for Roon. Reads only — asking for the state must never
+ * start a connection, or a page refresh would broadcast on the network.
+ */
+function roonState() {
+  if (!roon) {
+    return { stage: ROON_STAGE.IDLE, detail: "", paired: false, albums: 0, scan: null,
+             scanning: false, scanError: null };
+  }
+  const status = roon.status;
+  const coreId = roon.coreId || "roon";
+  const saved = store.get("roon.scan", null);
+  return Object.assign({}, status, {
+    albums: store.roonAlbumCount(coreId),
+    scan: saved && saved.coreId === coreId ? saved : null,
+    scanning: !!roonScan,
+    progress: roonScan ? roonScan.progress : null,
+    // A scan that stopped for a reason says the reason. Without this the page
+    // would show "nothing scanned yet" after a failure, which reads as an
+    // empty library rather than as something that went wrong.
+    scanError: store.get("roon.scanError", null),
+  });
+}
+
 // ------------------------------------------------------------------ state
 
 app.get("/api/state", async (req, res) => {
@@ -119,10 +225,113 @@ app.get("/api/state", async (req, res) => {
       redirectUri: PKCE.callbackUrlFrom(req),
       redirectCheck: PKCE.checkRedirectUri(PKCE.callbackUrlFrom(req)),
     },
+    roon: roonState(),
     cacheSize: store.matchCacheSize(),
     job: current ? { id: current.jobId, running: true } : null,
     version: require("./package.json").version,
   });
+});
+
+// ------------------------------------------------------------------- Roon
+
+/**
+ * Start pairing.
+ *
+ * With a host, that address is used and remembered. Without one, SOOD
+ * discovery runs. Either way this returns at once and the page polls
+ * /api/state: on a FIRST pair Roon answers "Registered" only once the user has
+ * enabled the extension, which is however long it takes them to walk to the
+ * Roon window, and a request held open for that is a request that times out.
+ */
+app.post("/api/roon/connect", (req, res) => {
+  const body = req.body || {};
+  const host = String(body.host || "").trim();
+  const port = Number(body.port) || 0;
+  try {
+    const core = roonCore();
+    if (host) core.connectTo(host, port || 9330);
+    else core.start();
+    res.json({ ok: true, roon: roonState() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** Forget the remembered Core and look again. */
+app.post("/api/roon/forget", (req, res) => {
+  if (!roon) return res.json({ ok: true, roon: roonState() });
+  roon.rediscover();
+  res.json({ ok: true, roon: roonState() });
+});
+
+/**
+ * Walk the library and store it.
+ *
+ * Runs in the background for the same reason a migration does: ten thousand
+ * albums is a hundred round trips to the Core, and the page shows progress
+ * rather than waiting on one request.
+ */
+app.post("/api/roon/scan", (req, res) => {
+  if (roonScan) return res.status(409).json({ error: "A Roon scan is already running." });
+  if (!roon || !roon.isPaired) {
+    return res.status(400).json({ error: "Pair with a Roon Core first." });
+  }
+  const resume = !!(req.body && req.body.resume);
+  const client = roonClient();
+  const scan = { cancelled: false, progress: { done: 0, total: 0, stored: 0, duplicates: 0 } };
+  roonScan = scan;
+
+  client.scan({
+    resume,
+    cancelled: () => scan.cancelled,
+    onProgress: (p) => { scan.progress = p; },
+  }).then((summary) => {
+    console.log("[roon] scan finished:", JSON.stringify(summary));
+  }).catch((e) => {
+    console.warn("[roon] scan failed:", e.message);
+    scan.error = e.message;
+    // Kept on the object rather than thrown away: the page reads it out of
+    // /api/state, and a scan that stopped for a reason must say the reason.
+    store.put("roon.scanError", e.message);
+  }).then(() => { roonScan = null; });
+
+  res.json({ ok: true });
+});
+
+app.post("/api/roon/scan/cancel", (req, res) => {
+  if (!roonScan) return res.status(404).json({ error: "No Roon scan is running." });
+  roonScan.cancelled = true;
+  res.json({ ok: true });
+});
+
+/**
+ * The scanned library, as a spreadsheet.
+ *
+ * This is the actual deliverable of a Roon scan: not "it worked", but a row
+ * per album saying whether it was found on each service and, when it was not,
+ * WHY. The reasons come out of the match cache, so a run has to have happened
+ * for those columns to be filled — the album list itself is there either way.
+ */
+app.get("/api/roon/library.csv", (req, res) => {
+  const coreId = (roon && roon.coreId) || "roon";
+  const rows = store.roonAlbums(coreId);
+  if (!rows.length) return res.status(404).send("No Roon library has been scanned yet.");
+
+  const header = ["artist", "album", "tracks", "spotify", "spotifyNote",
+                  "qobuz", "qobuzNote", "roonKey"];
+  const lines = [header.join(",")];
+  for (const r of rows) {
+    const sp = store.cachedMatch("roon", r.albumKey, "spotify", "album");
+    const qz = store.cachedMatch("roon", r.albumKey, "qobuz", "album");
+    lines.push([
+      r.artist, r.title, r.trackCount == null ? "" : r.trackCount,
+      (sp && sp.toId) || "", (sp && !sp.toId && sp.method) || "",
+      (qz && qz.toId) || "", (qz && !qz.toId && qz.method) || "",
+      r.albumKey,
+    ].map(csvCell).join(","));
+  }
+  res.type("text/csv").set("Content-Disposition",
+    'attachment; filename="roon-library.csv"').send(lines.join("\r\n"));
 });
 
 // -------------------------------------------------------------- Qobuz auth
@@ -317,6 +526,13 @@ app.post("/api/spotify/signout", (req, res) => {
 /** The source's playlists, so the user can choose which to bring over. */
 app.get("/api/playlists", async (req, res) => {
   const which = String(req.query.service || "");
+  if (which === "roon") {
+    // Answered with the REASON rather than an empty list. An empty list here
+    // reads as "you have no playlists", and the truth is that this app will
+    // not migrate them: a Roon playlist is a list of tracks and a Roon track
+    // carries no length to match on. See lib/roon.js.
+    return res.status(400).json({ error: new RoonClient({}).unsupported.playlists });
+  }
   const client = which === "qobuz" ? qobuzClient() : which === "spotify" ? spotifyClient() : null;
   if (!client) return res.status(400).json({ error: "Not signed in to " + which + "." });
   try {
@@ -335,18 +551,19 @@ app.post("/api/migrate", async (req, res) => {
   if (current) return res.status(409).json({ error: "A migration is already running." });
 
   const body = req.body || {};
-  const direction = body.direction === "spotify-to-qobuz" ? "spotify-to-qobuz"
-                                                          : "qobuz-to-spotify";
-  const fromName = direction === "qobuz-to-spotify" ? "qobuz" : "spotify";
-  const toName = direction === "qobuz-to-spotify" ? "spotify" : "qobuz";
+  const direction = DIRECTIONS[body.direction] ? body.direction : "qobuz-to-spotify";
+  const [fromName, toName] = DIRECTIONS[direction];
 
-  const qz = qobuzClient();
-  const sp = spotifyClient();
-  if (!qz) return res.status(400).json({ error: "Sign in to Qobuz first." });
-  if (!sp) return res.status(400).json({ error: "Sign in to Spotify first." });
-
-  const source = fromName === "qobuz" ? qz : sp;
-  const target = toName === "qobuz" ? qz : sp;
+  // Only the two services actually involved have to be signed in. Requiring
+  // both for a Roon migration would refuse a run that needs neither the other
+  // service's tokens nor its catalogue.
+  let source, target;
+  try {
+    source = clientFor(fromName);
+    target = clientFor(toName);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
 
   const options = {
     playlists: Array.isArray(body.playlists) ? body.playlists : !!body.playlists,

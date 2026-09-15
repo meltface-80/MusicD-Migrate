@@ -26,6 +26,27 @@ interface Store {
     fun putSetting(key: String, value: String)
     fun deleteSetting(key: String)
 
+    // ---------------------------------------------------------- roon library
+
+    /**
+     * Store a page of scanned albums.
+     *
+     * @return (stored, duplicates). Duplicates are albums whose normalised
+     *   title and artist collide with one already stored: a second copy of the
+     *   same record, a CD and a vinyl rip of it. One of them is enough to
+     *   migrate, but the number is reported so the totals add up and the user
+     *   is not left wondering why 10,014 albums became 9,987.
+     */
+    fun saveRoonAlbums(coreId: String, rows: List<RoonAlbumRow>): Pair<Int, Int>
+    fun roonAlbums(coreId: String): List<RoonAlbumRow>
+    fun roonAlbum(coreId: String, albumKey: String): RoonAlbumRow?
+    fun roonAlbumCount(coreId: String): Int
+    /** Filled in when something drills into an album, so the next run need not. */
+    fun setRoonAlbumTrackCount(coreId: String, albumKey: String, trackCount: Int?)
+    fun clearRoonAlbums(coreId: String)
+    fun saveRoonScan(summary: com.musicd.migrate.roon.RoonScanSummary)
+    fun roonScan(): com.musicd.migrate.roon.RoonScanSummary?
+
     // ---------------------------------------------------------- match cache
 
     /**
@@ -60,6 +81,30 @@ interface Store {
 }
 
 data class CachedMatch(val toId: String?, val method: String)
+
+/**
+ * One scanned Roon album.
+ *
+ * Keyed by a hash of its normalised title and artist rather than by Roon's own
+ * item_key: those are SESSION-SCOPED and meaningless once the browse session
+ * is re-navigated, and a stored one would drill into whatever has since taken
+ * that key. `position` is the album's offset in Roon's alphabetically-stable
+ * album list, kept as a hint for finding it again — checked against the title
+ * before it is used, so a stale hint can only cost a slower lookup, never the
+ * wrong album.
+ *
+ * `trackCount` is null until something drills in. A ten thousand album library
+ * is a hundred load calls to list; drilling every one for a count is twenty
+ * thousand.
+ */
+data class RoonAlbumRow(
+    val albumKey: String,
+    val title: String,
+    val artist: String,
+    val position: Int,
+    val imageKey: String? = null,
+    val trackCount: Int? = null
+)
 
 data class JobRow(
     val id: String,
