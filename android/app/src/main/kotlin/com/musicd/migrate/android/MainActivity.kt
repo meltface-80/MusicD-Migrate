@@ -1,16 +1,24 @@
 package com.musicd.migrate.android
 
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.ViewGroup
+import android.webkit.URLUtil
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import android.app.Activity
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * The whole user interface: a WebView pointed at this app's own server.
@@ -73,6 +81,26 @@ class MainActivity : Activity() {
                     return true
                 }
             }
+
+            /**
+             * A WebView does NOTHING with a download unless the app says what
+             * to do with it.
+             *
+             * Both CSV links on the page — the migration report and the Roon
+             * library — are ordinary <a download> links to this app's own
+             * server, and the server answers with Content-Disposition:
+             * attachment. In a browser that saves a file. In a WebView with no
+             * DownloadListener, tapping it silently does nothing at all, which
+             * is how both buttons were dead from v0.1.0 until somebody tried
+             * them. The report is the actual output of a migration, so this is
+             * not a cosmetic gap: it is the one feature the whole run exists
+             * to produce.
+             */
+            setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                val name = URLUtil.guessFileName(url, contentDisposition,
+                    mimeType ?: "text/csv")
+                saveDownload(url, name)
+            }
         }
 
         setContentView(web)
@@ -82,6 +110,81 @@ class MainActivity : Activity() {
 
     private fun isOurs(uri: Uri): Boolean =
         uri.scheme == "http" && (uri.host == "127.0.0.1" || uri.host == "localhost")
+
+    /**
+     * Fetch a download from this app's own server and put it somewhere the
+     * user can reach.
+     *
+     * Fetched in-process rather than handed to DownloadManager: the URL is
+     * loopback and may carry a PIN in its query, and DownloadManager is a
+     * different process with its own idea of both. It is our own server, two
+     * milliseconds away, and the file is a few hundred kilobytes of CSV.
+     *
+     * Where it lands depends on the Android version, and both branches are
+     * deliberate:
+     *   - API 29+: MediaStore's Downloads collection, which is the real
+     *     Downloads folder and needs NO permission.
+     *   - Below that: this app's own external files directory. Scoped storage
+     *     did not exist yet, so a file manager on those versions can open
+     *     Android/data freely — and the alternative would be a runtime
+     *     storage permission, or a ContentProvider written by hand, because
+     *     this app pulls in no AndroidX and so has no FileProvider.
+     *
+     * Either way the toast says where it went, because a download the user
+     * cannot find is the same as no download.
+     */
+    private fun saveDownload(url: String, name: String) {
+        Thread({
+            // The failure is REPORTED, not swallowed: a download that quietly
+            // does nothing is exactly the bug this method exists to fix, and
+            // catching the exception to show nothing would reproduce it.
+            var problem: String? = null
+            val result = try {
+                val bytes = fetch(url)
+                if (bytes == null) null else store(name, bytes)
+            } catch (e: Exception) {
+                problem = e.message ?: e.javaClass.simpleName
+                null
+            }
+            runOnUiThread {
+                Toast.makeText(this,
+                    result ?: ("Could not save " + name +
+                        if (problem != null) ": $problem" else "."),
+                    Toast.LENGTH_LONG).show()
+            }
+        }, "download").start()
+    }
+
+    private fun fetch(url: String): ByteArray? {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        return try {
+            conn.connectTimeout = 10000
+            conn.readTimeout = 60000
+            if (conn.responseCode !in 200..299) return null
+            conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** @return what to tell the user, or null if it could not be written. */
+    private fun store(name: String, bytes: ByteArray): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return null
+            return "Saved to Downloads/$name"
+        }
+        val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
+        dir.mkdirs()
+        val file = File(dir, name)
+        file.writeBytes(bytes)
+        return "Saved to ${file.absolutePath}"
+    }
 
     private fun openExternally(uri: Uri) {
         try {

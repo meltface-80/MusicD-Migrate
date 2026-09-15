@@ -275,7 +275,14 @@ class Migration(
                     record(JobItem("album", a.id, label, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
-                    record(JobItem("album", a.id, label, "unmatched", note = r.reason))
+                    // `failed`, not `unmatched`, when the lookup could not be
+                    // MADE. It renders red rather than amber, and that
+                    // difference is the whole point: 0.2.0 shipped with a
+                    // broken corroboration read, every album came back "not
+                    // found", and it read as a library that is not on the
+                    // other service rather than as a thing that was broken.
+                    record(JobItem("album", a.id, label,
+                        if (r.problem) "failed" else "unmatched", note = r.reason))
                 }
             }
             report(done = done.incrementAndGet(), label = "Favourite albums — $label")
@@ -469,7 +476,19 @@ class Migration(
 
     // ------------------------------------------------------------------ lookups
 
-    data class Resolved(val id: String?, val method: String?, val reason: String)
+    data class Resolved(
+        val id: String?,
+        val method: String?,
+        val reason: String,
+        /**
+         * Nothing was matched because a READ FAILED, not because the thing is
+         * not there. The row is reported as `failed` rather than `unmatched`,
+         * and the refusal is not cached.
+         *
+         * Kept in step with `problem` in lib/migrate.js by hand.
+         */
+        val problem: Boolean = false
+    )
 
     /**
      * The lookup, and the reason a migration takes minutes rather than hours:
@@ -599,6 +618,15 @@ class Migration(
         if (r.matched && corroborating) r = corroborate(r, wantTitles)
 
         val id = r.album?.id
+
+        // A refusal that came from a read FAILING is not cached. CLAUDE.md's
+        // rule is "cache the misses", and a miss is "we looked and found
+        // nothing" -- a real answer. "We could not look" is not an answer,
+        // and caching it would keep being reused after the thing that broke
+        // was fixed, which is how a bug outlives its own repair.
+        if (id == null && r.unreadable) {
+            return Resolved(null, null, r.reason, problem = true)
+        }
         store.cacheMatch(sourceName, a.id, targetName, "album", id,
             if (id != null) r.method ?: "" else r.reason)
         return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
@@ -626,8 +654,15 @@ class Migration(
             }
             if (closest == null || check.coverage > closest.coverage) closest = check
         }
-        return Match.Result(reason = closest?.reason
-            ?: "no album of that name could be corroborated against its track listing")
+        return Match.Result(
+            // A check that could not be MADE is not the same as a record that
+            // is not there. Passed up so the row is counted as failed rather
+            // than unmatched, and so the refusal is not cached: see
+            // resolveAlbum. A broken read cached as a miss would keep being
+            // reused after the read was fixed.
+            unreadable = closest?.unreadable ?: false,
+            reason = closest?.reason
+                ?: "no album of that name could be corroborated against its track listing")
     }
 
     fun resolveArtist(a: Artist): Resolved {

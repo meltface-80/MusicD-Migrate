@@ -273,3 +273,78 @@ test("Qobuz searches the barcode as a plain query and needs no stamp", async () 
   assert.match(http.calls[0].url, /type=albums/);
   assert.strictEqual(albums[0].upc, "075992736121", "read from the response, not stamped");
 });
+
+// ------------------------------------------------- an album's track listing
+//
+// albumTracks was added to the interface and to both clients for the
+// corroboration tier — the thing that decides a barcode-less album — and NOT
+// ONE of these tests existed. Only the fake was tested, and a fake agrees with
+// whatever you wrote. On a real library the tier then refused every album,
+// which is exactly the failure mode this whole repository is shaped against:
+// the corroboration silently could not read anything, so nothing matched.
+
+test("a Qobuz album's tracks come from album/get, with no extra parameter", async () => {
+  // album/get RETURNS THE TRACKS ON ITS OWN. MusicD-Remote — a Qobuz client
+  // that works — asks for `{album_id}` and reads `tracks.items`, and passing
+  // an `extra` value the API does not define is a request that can be refused
+  // outright. A refused read here is not a visible error: safely() turns it
+  // into "could not read the track listing" and every album is unmatched.
+  const http = fakeFetch([{ status: 200, body: {
+    id: "0060254776324", title: "Kind Of Blue", upc: "0060254776324",
+    tracks_count: 5, artist: { name: "Miles Davis" },
+    tracks: { items: [
+      { id: 1, title: "So What", duration: 545, isrc: "USSM17700001" },
+      { id: 2, title: "Freddie Freeloader", duration: 574 },
+    ] },
+  } }]);
+  const qz = new Qobuz({ token: "t" }, { fetch: http });
+  const tracks = await qz.albumTracks("0060254776324");
+
+  assert.match(http.calls[0].url, /album\/get/);
+  assert.match(http.calls[0].url, /album_id=0060254776324/);
+  assert.ok(!/extra=/.test(http.calls[0].url),
+    "album/get carries the tracks already; an undefined extra risks a refusal");
+
+  assert.deepStrictEqual(tracks.map((t) => t.title), ["So What", "Freddie Freeloader"]);
+  assert.strictEqual(tracks[0].durationMs, 545000, "Qobuz counts SECONDS");
+  assert.strictEqual(tracks[0].isrc, "USSM17700001");
+  assert.strictEqual(tracks[0].album, "Kind Of Blue",
+    "the album block does not repeat per track, so it is threaded down");
+});
+
+test("a Qobuz album with no tracks block is an empty listing, not a throw", async () => {
+  const http = fakeFetch([{ status: 200, body: { id: "x", title: "Nothing" } }]);
+  const qz = new Qobuz({ token: "t" }, { fetch: http });
+  assert.deepStrictEqual(await qz.albumTracks("x"), []);
+});
+
+test("a Spotify album's tracks are paged, and carry no ISRC", async () => {
+  // SimplifiedTrackObject: no external_ids and no album block. That is fine
+  // for what this is for — comparing TITLES against the other side's listing
+  // — but a caller must not expect an ISRC from it.
+  const page1 = { items: Array.from({ length: 50 }, (_, i) =>
+    ({ id: "t" + i, name: "Track " + i, duration_ms: 200000, artists: [{ name: "Band" }] })),
+    total: 52 };
+  const page2 = { items: [
+    { id: "t50", name: "Track 50", duration_ms: 1000, artists: [{ name: "Band" }] },
+    { id: "t51", name: "Track 51", duration_ms: 1000, artists: [{ name: "Band" }] }],
+    total: 52 };
+  const http = fakeFetch([{ status: 200, body: page1 }, { status: 200, body: page2 }]);
+  const sp = new Spotify(liveSession, { fetch: http });
+  const tracks = await sp.albumTracks("sal");
+
+  assert.match(http.calls[0].url, /albums\/sal\/tracks/);
+  assert.strictEqual(tracks.length, 52, "a box set is more than one page");
+  assert.strictEqual(tracks[0].title, "Track 0");
+  assert.strictEqual(tracks[0].isrc, "", "a simplified track has none");
+});
+
+test("an album id is escaped rather than concatenated", async () => {
+  // Qobuz ids are digits and Spotify's are base62, but they arrive from a
+  // search response rather than from us, and a path built by concatenation is
+  // one odd id away from requesting something else entirely.
+  const http = fakeFetch([{ status: 200, body: { items: [], total: 0 } }]);
+  const sp = new Spotify(liveSession, { fetch: http });
+  await sp.albumTracks("a/b?c");
+  assert.match(http.calls[0].url, /albums\/a%2Fb%3Fc\/tracks/);
+});

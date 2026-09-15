@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 190 tests
+npm test                                                  # 196 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 177 tests
+cd android && ./gradlew :core:test                         # 183 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -222,10 +222,36 @@ directory as-is.
 - **Obey 429 with the delay the service asked for.** Spotify sends
   `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
   cascade. Qobuz sends nothing, so it backs off exponentially.
-- **Cache the misses.** A cached "we looked and found nothing" is a real
-  answer. Treating it as "we have not looked" makes every re-run pay again for
-  exactly the tracks that are slowest, because a miss costs the full fallback
-  search.
+- **Cache the misses. Never cache a failed READ.** A cached "we looked and
+  found nothing" is a real answer; treating it as "we have not looked" makes
+  every re-run pay again for exactly the tracks that are slowest, because a
+  miss costs the full fallback search. But "we could not look" is not an
+  answer, and caching it keeps a bug alive after its own repair — the next run
+  reuses the refusal instead of retrying. So a refusal a failed read caused
+  carries `unreadable` out of `lib/match.js` / `Match.kt`, becomes `problem` on
+  the engine's `Resolved`, is **not** cached, and is recorded as **`failed`**
+  (red) rather than `unmatched` (amber). That difference is the deliverable:
+  0.2.0 shipped with a broken corroboration read, all ~1300 corroborated albums
+  came back amber "not found", and it read as a library that is not on the other
+  service rather than as a thing that was broken. It took a live run, a
+  screenshot and an experiment with the check turned off to find.
+- **An `extra` the API does not define is a request it can refuse.** Qobuz's
+  `album/get` returns the track listing on its own; `extra: "tracks"` was added
+  on a guess and `MusicD-Remote` — a Qobuz client that works — sends only
+  `album_id`. A refused read *there* is invisible, because `safely()` turns it
+  into one unmatched item and the corroboration tier then refuses every
+  barcode-less album. Do not send a parameter to either service without a
+  client that is known to work sending it too.
+- **A WebView does NOTHING with a download unless the app says what to do.**
+  Both CSV links are ordinary `<a download>` links to the app's own server, and
+  with no `DownloadListener` tapping one does nothing at all, silently — dead
+  from v0.1.0 until somebody tried them. The report is the actual output of a
+  migration, so a dead download is not cosmetic: it is the whole point of the
+  run. `MainActivity` fetches it in-process (the URL is loopback and may carry
+  the PIN in its query, which `DownloadManager`, a different process, knows
+  nothing about) and writes it through `MediaStore.Downloads` on API 29+ or
+  `getExternalFilesDir` below that, and **the toast always says where it went**,
+  because a download the user cannot find is the same as no download.
 - **Playlist order is a promise.** Lookups run concurrently; results are
   written into a slot by index and read back in order. Pushing as they land
   shuffles every playlist into completion order. The *report* rows are not

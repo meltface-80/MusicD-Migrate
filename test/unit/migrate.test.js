@@ -625,11 +625,11 @@ test("corroboration can be turned off, and then the title tier decides alone", a
   assert.strictEqual(target.albumTrackCalls, undefined, "and nothing extra was read");
 });
 
-test("a barcode-less album whose listing cannot be read is refused, and says which", async () => {
-  // Deliberate: with no barcode and no listing there is no decisive evidence,
-  // and this app refuses where the evidence is not decisive. The reason has to
-  // say it was a failure to CHECK rather than a record that is not there,
-  // because those call for different things from the user.
+test("a listing that cannot be read is a FAILURE, not a record that is not there", async () => {
+  // 0.2.0 shipped with a broken corroboration read. Every album came back
+  // "not found" — amber, indistinguishable from a library that is genuinely
+  // not on the other service — and the cause took a live run and a
+  // screenshot to find. A check that could not be MADE is red.
   const source = new FakeService("q", { lib: { albums: [album({ upc: "" })] } });
   source.albumDetail = async () => null;
   source.albumTracks = async () => { throw new Error("the source would not say"); };
@@ -637,10 +637,50 @@ test("a barcode-less album whose listing cannot be read is refused, and says whi
   target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
     artists: ["Metallica"], upc: "", trackCount: 8, tracks: [{ title: "Battery" }] }];
 
+  const { result, items, store } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.failed, 1, "red, so it cannot be mistaken for a miss");
+  assert.strictEqual(result.counts.unmatched, 0);
+  assert.match(items[0].note, /track listing from the source/);
+
+  // And it is NOT cached. "We looked and found nothing" is a real answer worth
+  // keeping; "we could not look" is not, and caching it would keep being
+  // reused after the thing that broke was fixed.
+  assert.strictEqual(store.cachedMatch("qobuz", "qal", "spotify", "album"), null,
+    "a failed read must be retried on the next run, not remembered as a miss");
+});
+
+test("the other service refusing to list an album is also a failure", async () => {
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({ upc: "" }),
+    { tracks: [{ title: "Battery" }, { title: "Leper Messiah" }] })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 8 }];   // no tracks to list
   const { result, items } = await run(source, target,
     Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.failed, 1);
+  assert.match(items[0].note, /would not list that album's tracks/);
+});
+
+test("a listing that disagrees is still an ordinary miss, and is cached", async () => {
+  // The other side of it: a record that is genuinely a different record is
+  // amber and IS remembered, or every re-run pays for it again.
+  const source = new FakeService("q", { lib: { albums: [Object.assign(album({
+    id: "qal", title: "Greatest Hits", upc: "" }), {
+    tracks: ["One", "Two", "Three", "Four"].map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Greatest Hits",
+    artists: ["Metallica"], upc: "",
+    tracks: ["Nine", "Ten", "Eleven", "One"].map((t) => ({ title: t })) }];
+
+  const { result, store } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
   assert.strictEqual(result.counts.unmatched, 1);
-  assert.match(items[0].note, /track listing from the source/);
+  assert.strictEqual(result.counts.failed, 0);
+  const cached = store.cachedMatch("qobuz", "qal", "spotify", "album");
+  assert.ok(cached && cached.toId === null, "a real miss is remembered");
 });
 
 test("a barcode match is never second-guessed by a track listing", async () => {

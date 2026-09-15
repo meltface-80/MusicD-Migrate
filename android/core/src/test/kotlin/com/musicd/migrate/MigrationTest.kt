@@ -1,6 +1,7 @@
 package com.musicd.migrate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -522,10 +523,11 @@ class MigrationTest {
         assertEquals("and nothing extra was read", 0, target.albumTrackCalls.get())
     }
 
-    @Test fun `a barcode-less album whose listing cannot be read is refused, and says which`() {
-        // Deliberate: with no barcode and no listing there is no decisive
-        // evidence. The reason has to say it was a failure to CHECK rather
-        // than a record that is not there.
+    @Test fun `a listing that cannot be read is a FAILURE, not a record that is not there`() {
+        // 0.2.0 shipped with a broken corroboration read. Every album came
+        // back "not found" -- amber, indistinguishable from a library that is
+        // genuinely not on the other service -- and the cause took a live run
+        // and a screenshot to find. A check that could not be MADE is red.
         val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
         source.albumTracksFails = true
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(
@@ -533,8 +535,44 @@ class MigrationTest {
         target.albumTrackListings["sal"] = listing("Battery")
 
         val r = run(source, target, NOTHING.copy(doAlbums = true))
-        assertEquals(1, r.counts["unmatched"])
+        assertEquals("red, so it cannot be mistaken for a miss", 1, r.counts["failed"])
+        assertNull(r.counts["unmatched"])
         assertTrue(r.items[0].note.orEmpty().contains("track listing from the source"))
+
+        // And it is NOT cached. "We looked and found nothing" is a real answer
+        // worth keeping; "we could not look" is not, and caching it would keep
+        // being reused after the thing that broke was fixed.
+        assertNull("a failed read must be retried on the next run, not remembered as a miss",
+            r.store.cachedMatch("qobuz", "qal", "spotify", "album"))
+    }
+
+    @Test fun `the other service refusing to list an album is also a failure`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "")))
+        source.albumTrackListings["qal"] = listing("Battery", "Leper Messiah")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        // No listing for "sal" at all: the other side would not say.
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["failed"])
+        assertTrue(r.items[0].note.orEmpty().contains("would not list that album's tracks"))
+    }
+
+    @Test fun `a listing that disagrees is still an ordinary miss, and is cached`() {
+        // The other side of it: a record that is genuinely a different record
+        // is amber and IS remembered, or every re-run pays for it again.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(title = "Greatest Hits", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = listing("One", "Two", "Three", "Four")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Greatest Hits", listOf("Metallica"), null)))
+        target.albumTrackListings["sal"] = listing("Nine", "Ten", "Eleven", "One")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(1, r.counts["unmatched"])
+        assertNull(r.counts["failed"])
+        val cached = r.store.cachedMatch("qobuz", "qal", "spotify", "album")
+        assertTrue("a real miss is remembered", cached != null && cached.toId == null)
     }
 
     @Test fun `a barcode match is never second-guessed by a track listing`() {

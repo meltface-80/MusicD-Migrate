@@ -300,8 +300,18 @@ class QobuzClient(
     override fun albumDetail(albumId: String): Album? =
         toQobuzAlbum(request("album/get", mapOf("album_id" to albumId)))
 
+    /**
+     * One album's track listing.
+     *
+     * No `extra` parameter: album/get returns the tracks on its own, and
+     * MusicD-Remote -- a Qobuz client that works -- asks for nothing else. An
+     * `extra` value the API does not define is a request it can refuse
+     * outright, and a refused read here is INVISIBLE: safely() turns it into
+     * "could not read the track listing" and the corroboration tier then
+     * unmatches every barcode-less album. That is what shipped in 0.2.0.
+     */
     override fun albumTracks(albumId: String): List<Track> {
-        val r = request("album/get", mapOf("album_id" to albumId, "extra" to "tracks"))
+        val r = request("album/get", mapOf("album_id" to albumId))
         val album = toQobuzAlbum(r)
         // Tracks inside an album response do not repeat the album block, so
         // the album's own title and artist are threaded down -- without them
