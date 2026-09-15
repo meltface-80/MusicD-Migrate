@@ -317,6 +317,19 @@ details summary { cursor: pointer; }
 
 /* ------------------------------------------------------------------ toast */
 
+/* The reason a run stopped. Loud on purpose: it is the one thing on the page
+   the user has to read, and it stays until they close the panel. */
+.res-error {
+  margin: 10px 0 4px;
+  padding: 11px 13px;
+  border: 1px solid var(--bad);
+  border-left-width: 4px;
+  border-radius: 8px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.res-error[hidden] { display: none; }
+
 .toast {
   position: fixed;
   left: 50%; transform: translateX(-50%);

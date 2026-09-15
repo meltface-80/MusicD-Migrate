@@ -235,6 +235,17 @@ directory as-is.
   came back amber "not found", and it read as a library that is not on the other
   service rather than as a thing that was broken. It took a live run, a
   screenshot and an experiment with the check turned off to find.
+- **A check that never once works stops the run.** `UNREADABLE_LIMIT`, in both
+  languages: fifty albums that could not be CHECKED with not one success is the
+  check being broken, not bad luck, and one album corroborating anywhere
+  disarms it for good so it cannot fire on a healthy run. This is the same rule
+  as `safely()` re-throwing `AuthError` — a dead sign-in must stop a run rather
+  than be reported as four thousand misses — and 0.2.0 is why it needed writing
+  down: the run carried on for forty minutes and three thousand searches
+  against a rate-limited API to report a library it could not check as a
+  library that is not there. The reason a run stopped is shown **on the page**
+  (`#res-error`), not in a toast: five seconds is not long enough to read the
+  single most important sentence of a forty-minute run, let alone act on it.
 - **An `extra` the API does not define is a request it can refuse.** Qobuz's
   `album/get` returns the track listing on its own; `extra: "tracks"` was added
   on a guess and `MusicD-Remote` — a Qobuz client that works — sends only
