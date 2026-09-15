@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { Migration } = require("../../lib/migrate");
+const { Migration, UNREADABLE_LIMIT } = require("../../lib/migrate");
 const storeMod = require("../../lib/store");
 const { SOURCE_METHODS } = require("../../lib/service");
 
@@ -681,6 +681,67 @@ test("a listing that disagrees is still an ordinary miss, and is cached", async 
   assert.strictEqual(result.counts.failed, 0);
   const cached = store.cachedMatch("qobuz", "qal", "spotify", "album");
   assert.ok(cached && cached.toId === null, "a real miss is remembered");
+});
+
+test("a check that never once works stops the run rather than costing an hour", async () => {
+  // 0.2.0 did the opposite: the corroboration read was broken and the run
+  // carried on regardless, for forty minutes and three thousand searches
+  // against a rate-limited API, to report 2325 albums "not found" — which was
+  // not about the library at all. A read that fails EVERY time is the same
+  // category as a dead sign-in, which CLAUDE.md already says must stop a run.
+  const many = [];
+  for (let i = 0; i < UNREADABLE_LIMIT + 20; i++) {
+    many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  }
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  source.albumTracks = async () => { throw new Error("the source would not say"); };
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = many.map((a, i) => ({ id: "sal" + i, title: a.title,
+    artists: ["Metallica"], upc: "", trackCount: 8, tracks: [{ title: "Battery" }] }));
+
+  await assert.rejects(
+    () => run(source, target, Object.assign({}, NOTHING, { albums: true, concurrency: 1 })),
+    (e) => {
+      assert.ok(e.brokenRead, "it is this, and not some other failure");
+      assert.match(e.message, /could not be checked and not one could/);
+      assert.match(e.message, /not your library/, "the user is told where to look");
+      assert.match(e.message, /track listing/, "and how to carry on without it");
+      return true;
+    });
+  assert.ok(source.lib.albums.length > UNREADABLE_LIMIT + 10,
+    "the library was bigger than the limit, so stopping early means something");
+  assert.ok(target.searchCount <= UNREADABLE_LIMIT + 1,
+    "and it stopped there: " + target.searchCount + " searches, not " + many.length);
+});
+
+test("one album corroborating disarms that for good", async () => {
+  // The breaker must not fire on a healthy run. Proof that it is armed by
+  // "the check has NEVER worked" and not merely by a count of failures: the
+  // same library, with the first album readable, runs to the end.
+  const many = [Object.assign(album({ id: "qgood", title: "Readable", upc: "" }),
+    { tracks: [{ title: "Aaa" }, { title: "Bbb" }] })];
+  for (let i = 0; i < UNREADABLE_LIMIT + 20; i++) {
+    many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  }
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  // Every album is FOUND on the other side; only the first one's listing can
+  // be read. So the rest are `unreadable` — the very thing that is counted —
+  // and there are more of them than the limit.
+  target.catalogueAlbums = [{ id: "sgood", title: "Readable", artists: ["Metallica"],
+    upc: "", trackCount: 2, tracks: [{ title: "Aaa" }, { title: "Bbb" }] }].concat(
+    many.slice(1).map((a, i) => ({ id: "sal" + i, title: a.title,
+      artists: ["Metallica"], upc: "", trackCount: 8 })));   // no tracks to list
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, concurrency: 1 }));
+  assert.strictEqual(result.counts.matched, 1, "the one that could be checked");
+  assert.strictEqual(result.counts.failed, many.length - 1,
+    "every other album is a failed CHECK, and there are more than the limit");
+  assert.ok(result.counts.failed > UNREADABLE_LIMIT,
+    "so the run only finished because one success disarmed the breaker");
 });
 
 test("a barcode match is never second-guessed by a track listing", async () => {

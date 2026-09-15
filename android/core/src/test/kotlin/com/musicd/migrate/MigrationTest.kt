@@ -575,6 +575,67 @@ class MigrationTest {
         assertTrue("a real miss is remembered", cached != null && cached.toId == null)
     }
 
+    @Test fun `a check that never once works stops the run rather than costing an hour`() {
+        // 0.2.0 did the opposite: the corroboration read was broken and the
+        // run carried on regardless, for forty minutes and three thousand
+        // searches against a rate-limited API, to report 2325 albums "not
+        // found" -- which was not about the library at all. A read that fails
+        // EVERY time is the same category as a dead sign-in, which CLAUDE.md
+        // already says must stop a run.
+        val many = (0 until Migration.UNREADABLE_LIMIT + 20).map { i ->
+            alb(id = "qal$i", title = "Record $i", upc = "")
+        }.toMutableList()
+        val source = FakeService("qobuz", libAlbums = many)
+        source.albumTracksFails = true
+        val target = FakeService("spotify", catalogueAlbums = many.mapIndexed { i, a ->
+            Album("sal$i", "", a.title, listOf("Metallica"), 8)
+        }.toMutableList())
+        for (i in many.indices) target.albumTrackListings["sal$i"] = listing("Battery")
+
+        val e = try {
+            run(source, target, NOTHING.copy(doAlbums = true, concurrency = 1))
+            fail("the run should have stopped"); null
+        } catch (e: BrokenRead) {
+            e
+        }
+        val message = e?.message.orEmpty()
+        assertTrue("it says what happened: $message",
+            message.contains("could not be checked and not one could"))
+        assertTrue("the user is told where to look", message.contains("not your library"))
+        assertTrue("and how to carry on without it", message.contains("track listing"))
+        assertTrue("it stopped early: ${target.searchCount.get()} searches, not ${many.size}",
+            target.searchCount.get() <= Migration.UNREADABLE_LIMIT + 1)
+    }
+
+    @Test fun `one album corroborating disarms that for good`() {
+        // The breaker must not fire on a healthy run. Proof that it is armed
+        // by "the check has NEVER worked" and not merely by a count of
+        // failures: the same library, with the first album readable, runs to
+        // the end.
+        val many = mutableListOf(alb(id = "qgood", title = "Readable", upc = ""))
+        for (i in 0 until Migration.UNREADABLE_LIMIT + 20) {
+            many.add(alb(id = "qal$i", title = "Record $i", upc = ""))
+        }
+        val source = FakeService("qobuz", libAlbums = many)
+        source.albumTrackListings["qgood"] = listing("Aaa", "Bbb")
+        // Every album is FOUND on the other side; only the first one's
+        // listing can be read. So the rest are `unreadable` -- the very thing
+        // that is counted -- and there are more of them than the limit.
+        val cands = mutableListOf(Album("sgood", "", "Readable", listOf("Metallica"), 2))
+        for (i in 1 until many.size) {
+            cands.add(Album("sal$i", "", many[i].title, listOf("Metallica"), 8))
+        }
+        val target = FakeService("spotify", catalogueAlbums = cands)
+        target.albumTrackListings["sgood"] = listing("Aaa", "Bbb")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, concurrency = 1))
+        assertEquals("the one that could be checked", 1, r.counts["matched"])
+        assertEquals("every other album is a failed CHECK, and there are more than the limit",
+            many.size - 1, r.counts["failed"])
+        assertTrue("so the run only finished because one success disarmed the breaker",
+            (r.counts["failed"] ?: 0) > Migration.UNREADABLE_LIMIT)
+    }
+
     @Test fun `a barcode match is never second-guessed by a track listing`() {
         val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "0075596040129")))
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(

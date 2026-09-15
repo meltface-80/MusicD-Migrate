@@ -30,6 +30,14 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class Cancelled : RuntimeException("Cancelled")
 
+/**
+ * The corroboration read is broken, so the run was stopped.
+ *
+ * Its own type so a caller can tell it from an ordinary failure. The twin of
+ * `e.brokenRead` in lib/migrate.js.
+ */
+class BrokenRead(message: String) : RuntimeException(message)
+
 data class MigrationOptions(
     /** null = all of the user's own; a list = exactly these; empty = none. */
     val playlistIds: List<String>? = null,
@@ -96,11 +104,31 @@ class Migration(
     private val pending = java.util.Collections.synchronizedList(ArrayList<JobItem>())
     private val searches = AtomicInteger(0)
     private val cacheHits = AtomicInteger(0)
+    private val unreadable = AtomicInteger(0)
+    private val corroborated = AtomicInteger(0)
 
     @Volatile private var progress = Progress()
     @Volatile private var lastProgressAt = 0L
 
     fun cancel() { cancelled.set(true) }
+
+    /**
+     * An album could not be CHECKED. Count it, and stop the run if the check
+     * itself is plainly broken.
+     *
+     * @see UNREADABLE_LIMIT
+     */
+    private fun noteUnreadable(reason: String) {
+        val n = unreadable.incrementAndGet()
+        if (corroborated.get() > 0 || n < UNREADABLE_LIMIT) return
+        throw BrokenRead(
+            "Stopped after $n albums could not be checked and not one could: " +
+            reason + ". This is the track-listing check failing, not your " +
+            "library — carrying on would have searched for thousands of albums " +
+            "and reported every one of them as not found. Nothing already " +
+            "matched has been lost. Turning off \"check the track listing\" " +
+            "will migrate on title and artist alone, which is weaker evidence.")
+    }
 
     private fun checkCancelled() { if (cancelled.get()) throw Cancelled() }
 
@@ -283,6 +311,10 @@ class Migration(
                     // other service rather than as a thing that was broken.
                     record(JobItem("album", a.id, label,
                         if (r.problem) "failed" else "unmatched", note = r.reason))
+                    // Recorded first, then counted: if this is the one that
+                    // stops the run, its row has to be in the report that
+                    // says why.
+                    if (r.problem) noteUnreadable(r.reason)
                 }
             }
             report(done = done.incrementAndGet(), label = "Favourite albums — $label")
@@ -649,6 +681,10 @@ class Migration(
             val tracks = safely { target.albumTracks(cand.id) } ?: emptyList()
             val check = Match.tracklistCorroborates(wantTitles, tracks)
             if (check.ok) {
+                // One of these anywhere in the run proves the check works,
+                // and disarms the circuit breaker for good. See
+                // noteUnreadable.
+                corroborated.incrementAndGet()
                 return Match.Result(album = cand, method = (r.method ?: "") + "+tracklist",
                     score = r.score, reason = check.reason)
             }
@@ -762,6 +798,27 @@ class Migration(
          * Kept in step with CORROBORATE_CANDIDATES in lib/migrate.js by hand.
          */
         private const val CORROBORATE_CANDIDATES = 2
+
+        /**
+         * How many albums may fail to be CHECKED before the run gives up.
+         *
+         * Not a tuning knob — a circuit breaker. 0.2.0's corroboration read
+         * was broken, and the run dutifully carried on: forty minutes, three
+         * thousand searches against a rate-limited API, and a report of 2325
+         * albums "not found" that was not about the library at all.
+         *
+         * CLAUDE.md already says a dead sign-in must stop the run rather than
+         * be reported as four thousand misses. A read that fails every single
+         * time is the same thing. Fifty with not ONE success is not bad luck
+         * at the edges: it is the check itself being broken, and stopping says
+         * so while the user is still watching.
+         *
+         * It cannot fire on a healthy run: one album corroborating anywhere
+         * disarms it for good.
+         *
+         * Kept in step with UNREADABLE_LIMIT in lib/migrate.js by hand.
+         */
+        const val UNREADABLE_LIMIT = 50
 
         /**
          * Run something that talks to a service, treating a failure as "no

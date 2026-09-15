@@ -575,7 +575,12 @@
       : job.status === "interrupted" ? "Interrupted"
       : "Failed";
     renderCounts($("res-counts"), job.counts || {}, null);
-    if (job.error) toast(job.error);
+    // On the page, not in a toast: a run that stopped says why in one long
+    // sentence, and five seconds of it is not enough to read, let alone act
+    // on. It stays until the panel is closed.
+    var err = $("res-error");
+    err.textContent = job.error || "";
+    err.hidden = !job.error;
     $("res-csv").href = "/api/job/" + id + "/report.csv" +
       (pin ? "?pin=" + encodeURIComponent(pin) : "");
     $("res-unmatched").onclick = function () { showItems(id, "unmatched"); };
