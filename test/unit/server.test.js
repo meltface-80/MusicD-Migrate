@@ -196,3 +196,91 @@ test("both callback paths bypass the PIN, since a redirect carries no header",
       assert.strictEqual(res.status, 200, p + " must not be behind the PIN");
     }
   });
+
+// ---------------------------------------------------------------- Roon
+//
+// No Roon Core is contacted: every one of these is either refused before a
+// packet would leave, or reads rows the test put in the store itself. What is
+// being checked is the part that WOULD be wrong without a test — a refusal
+// that says the wrong thing, or a route that pairs as a side effect of the
+// page being loaded.
+
+test("asking for the state never starts looking for a Roon Core", async () => {
+  // A page refresh must not broadcast on somebody's network. The Roon client
+  // is created on the first press of "Find my Roon Core" and not before.
+  const j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.strictEqual(j.roon.stage, "idle");
+  assert.strictEqual(j.roon.paired, false);
+  assert.strictEqual(j.roon.albums, 0);
+  assert.strictEqual(j.roon.scan, null);
+});
+
+test("a scan is refused until there is a Core to scan", async () => {
+  const res = await fetch(base() + "/api/roon/scan", withPin({ method: "POST" }));
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /Pair with a Roon Core/);
+});
+
+test("migrating from Roon is refused with the step that is missing, not a 500", async () => {
+  const res = await fetch(base() + "/api/migrate", withPin({
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ direction: "roon-to-spotify", albums: true, dryRun: true }),
+  }));
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /Pair with a Roon Core/);
+});
+
+test("Roon is never offered as a destination", async () => {
+  // There is no way to put an album into somebody's local library. An unknown
+  // direction falls back to the default rather than inventing one, and the
+  // refusal that follows names Qobuz, not Roon.
+  const res = await fetch(base() + "/api/migrate", withPin({
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ direction: "spotify-to-roon", albums: true, dryRun: true }),
+  }));
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /Qobuz/);
+});
+
+test("asking Roon for playlists answers with the reason, not an empty list", async () => {
+  // An empty list reads as "you have no playlists". The truth is that this app
+  // will not migrate them, and the reason is the argument for why Roon albums
+  // are safe and Roon tracks are not.
+  const res = await fetch(base() + "/api/playlists?service=roon", withPin());
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /no length to match it on/);
+});
+
+test("the library CSV says there is no scan rather than sending an empty file", async () => {
+  const res = await fetch(base() + "/api/roon/library.csv", withPin());
+  assert.strictEqual(res.status, 404);
+  assert.match(await res.text(), /has been scanned yet/);
+});
+
+test("the library CSV carries the albums and what each was matched to", async () => {
+  // The actual deliverable of a Roon scan: not "it worked", but a row per
+  // album saying whether it was found on each service and, when it was not,
+  // why. The reasons come out of the match cache.
+  store.saveRoonAlbums("roon", [
+    { albumKey: "ra_one", title: "Kind Of Blue", artist: "Miles Davis", position: 0 },
+    { albumKey: "ra_two", title: "-Minus", artist: "Someone", position: 1 },
+  ]);
+  store.setRoonAlbumTrackCount("roon", "ra_one", 5);
+  store.cacheMatch("roon", "ra_one", "spotify", "album", "spAlbum1", "exact+tracklist");
+  store.cacheMatch("roon", "ra_two", "spotify", "album", null,
+    "an album of that name is there but its track listing does not agree");
+
+  const res = await fetch(base() + "/api/roon/library.csv", withPin());
+  assert.strictEqual(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /text\/csv/);
+  const lines = (await res.text()).split("\r\n");
+
+  assert.strictEqual(lines[0],
+    "artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey");
+  assert.match(lines[1], /^Miles Davis,Kind Of Blue,5,spAlbum1,,,,ra_one$/);
+  // A title beginning with "-" is executed as a formula by Excel and Sheets.
+  assert.match(lines[2], /^Someone,'-Minus,,,/);
+  assert.match(lines[2], /track listing does not agree/);
+
+  store.clearRoonAlbums("roon");
+});

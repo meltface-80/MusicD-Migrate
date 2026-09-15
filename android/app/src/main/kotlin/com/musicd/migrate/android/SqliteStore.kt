@@ -7,7 +7,10 @@ import android.database.sqlite.SQLiteOpenHelper
 import com.musicd.migrate.CachedMatch
 import com.musicd.migrate.JobItem
 import com.musicd.migrate.JobRow
+import com.musicd.migrate.RoonAlbumRow
 import com.musicd.migrate.Store
+import com.musicd.migrate.roon.RoonScanSummary
+import org.json.JSONObject
 
 /**
  * The store on a phone. The same three tables lib/store.js creates, with the
@@ -21,7 +24,7 @@ import com.musicd.migrate.Store
  */
 class SqliteStore(context: Context) : Store {
 
-    private val helper = object : SQLiteOpenHelper(context, "migrate.db", null, 1) {
+    private val helper = object : SQLiteOpenHelper(context, "migrate.db", null, 2) {
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL("""
                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
@@ -45,12 +48,27 @@ class SqliteStore(context: Context) : Store {
                   method TEXT, note TEXT)""")
             db.execSQL("CREATE INDEX job_items_job ON job_items(job_id)")
             db.execSQL("CREATE INDEX job_items_status ON job_items(job_id, status)")
+            createRoonAlbums(db)
         }
 
         override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
-            // Version 1 is the only version. When there is a version 2 this
-            // migrates rather than drops: the match cache is expensive to
-            // rebuild and the sign-ins are worse to lose.
+            // Migrating, never dropping. An installed copy of this app holds
+            // two services' sign-ins and a match cache that cost hours of
+            // rate-limited lookups to build; recreating the database would
+            // throw both away and look like the app had signed itself out.
+            if (old < 2) createRoonAlbums(db)
+        }
+
+        private fun createRoonAlbums(db: SQLiteDatabase) {
+            // The same table lib/store.js creates. See Store.RoonAlbumRow for
+            // why the key is a hash rather than Roon's own item_key.
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS roon_albums (
+                  core_id TEXT NOT NULL, album_key TEXT NOT NULL,
+                  title TEXT NOT NULL, artist TEXT NOT NULL,
+                  position INTEGER NOT NULL, image_key TEXT,
+                  track_count INTEGER, scanned_at INTEGER NOT NULL,
+                  PRIMARY KEY (core_id, album_key))""")
         }
 
         override fun onConfigure(db: SQLiteDatabase) {
@@ -61,6 +79,102 @@ class SqliteStore(context: Context) : Store {
     }
 
     private val db: SQLiteDatabase get() = helper.writableDatabase
+
+    // ------------------------------------------------------------ roon library
+
+    override fun saveRoonAlbums(coreId: String, rows: List<RoonAlbumRow>): Pair<Int, Int> {
+        val now = System.currentTimeMillis()
+        var stored = 0
+        val d = db
+        // One transaction per page, not per album: a ten thousand album scan
+        // is a hundred commits rather than ten thousand fsyncs, and a scan
+        // killed halfway has kept everything up to the last page.
+        d.beginTransaction()
+        try {
+            for (r in rows) {
+                val values = ContentValues().apply {
+                    put("core_id", coreId)
+                    put("album_key", r.albumKey)
+                    put("title", r.title)
+                    put("artist", r.artist)
+                    put("position", r.position)
+                    put("image_key", r.imageKey)
+                    put("scanned_at", now)
+                }
+                // CONFLICT_IGNORE: the first copy of a record wins, matching
+                // ON CONFLICT DO NOTHING on the JavaScript side.
+                val id = d.insertWithOnConflict("roon_albums", null, values,
+                    SQLiteDatabase.CONFLICT_IGNORE)
+                if (id != -1L) stored++
+            }
+            d.setTransactionSuccessful()
+        } finally {
+            d.endTransaction()
+        }
+        return stored to (rows.size - stored)
+    }
+
+    private fun roonRow(c: android.database.Cursor) = RoonAlbumRow(
+        albumKey = c.getString(c.getColumnIndexOrThrow("album_key")),
+        title = c.getString(c.getColumnIndexOrThrow("title")),
+        artist = c.getString(c.getColumnIndexOrThrow("artist")),
+        position = c.getInt(c.getColumnIndexOrThrow("position")),
+        imageKey = c.getColumnIndexOrThrow("image_key").let {
+            if (c.isNull(it)) null else c.getString(it) },
+        trackCount = c.getColumnIndexOrThrow("track_count").let {
+            if (c.isNull(it)) null else c.getInt(it) }
+    )
+
+    override fun roonAlbums(coreId: String): List<RoonAlbumRow> =
+        db.rawQuery("SELECT * FROM roon_albums WHERE core_id = ? ORDER BY position",
+            arrayOf(coreId)).use { c ->
+            val out = ArrayList<RoonAlbumRow>()
+            while (c.moveToNext()) out.add(roonRow(c))
+            out
+        }
+
+    override fun roonAlbum(coreId: String, albumKey: String): RoonAlbumRow? =
+        db.rawQuery("SELECT * FROM roon_albums WHERE core_id = ? AND album_key = ?",
+            arrayOf(coreId, albumKey)).use { c -> if (c.moveToFirst()) roonRow(c) else null }
+
+    override fun roonAlbumCount(coreId: String): Int =
+        db.rawQuery("SELECT COUNT(*) FROM roon_albums WHERE core_id = ?",
+            arrayOf(coreId)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    override fun setRoonAlbumTrackCount(coreId: String, albumKey: String, trackCount: Int?) {
+        val values = ContentValues().apply {
+            if (trackCount == null) putNull("track_count") else put("track_count", trackCount)
+        }
+        db.update("roon_albums", values, "core_id = ? AND album_key = ?",
+            arrayOf(coreId, albumKey))
+    }
+
+    override fun clearRoonAlbums(coreId: String) {
+        db.delete("roon_albums", "core_id = ?", arrayOf(coreId))
+    }
+
+    /* The scan's own position is a setting rather than a table: it is one row
+     * and it has the same lifetime as the sign-ins. lib/store.js keeps it the
+     * same way, under the same key. */
+    override fun saveRoonScan(summary: RoonScanSummary) {
+        putSetting("roon.scan", JSONObject()
+            .put("coreId", summary.coreId).put("offset", summary.offset)
+            .put("total", summary.total).put("stored", summary.stored)
+            .put("duplicates", summary.duplicates).put("done", summary.done).toString())
+    }
+
+    override fun roonScan(): RoonScanSummary? {
+        val raw = setting("roon.scan") ?: return null
+        return try {
+            val o = JSONObject(raw)
+            RoonScanSummary(o.getString("coreId"), o.getInt("offset"), o.getInt("total"),
+                o.getInt("stored"), o.getInt("duplicates"), o.getBoolean("done"))
+        } catch (e: Exception) {
+            // A row written by an older build, or a truncated write. Losing a
+            // resume point costs one rescan; a crash here would cost the app.
+            null
+        }
+    }
 
     // -------------------------------------------------------------- settings
 

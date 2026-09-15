@@ -68,6 +68,21 @@ interface MusicSource {
     val serviceName: String
     val accountId: String
 
+    /**
+     * Kinds this source will not offer, keyed "tracks" / "playlists", with the
+     * reason as the value.
+     *
+     * Roon is why. Its browse API gives a track's title and artist and NOT its
+     * length, and title plus artist is exactly what a cover, a re-recording
+     * and a live take also satisfy — so a track from Roon can never be matched
+     * safely, and neither can a Roon playlist.
+     *
+     * The wrong way to handle that is an empty list: the run then reports "0
+     * tracks matched" and finishes green, which reads as a library with
+     * nothing in it. Migration records the reason as a skipped row instead.
+     */
+    val unsupported: Map<String, String> get() = emptyMap()
+
     fun me(): Account
 
     fun playlists(): List<Playlist>

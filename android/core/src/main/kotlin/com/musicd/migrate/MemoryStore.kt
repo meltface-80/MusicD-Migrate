@@ -20,6 +20,46 @@ class MemoryStore : Store {
     override fun putSetting(key: String, value: String) { settings[key] = value }
     override fun deleteSetting(key: String) { settings.remove(key) }
 
+    // ---------------------------------------------------------- roon library
+
+    private val roon = LinkedHashMap<String, LinkedHashMap<String, RoonAlbumRow>>()
+    private var roonScanRow: com.musicd.migrate.roon.RoonScanSummary? = null
+
+    private fun roonFor(coreId: String) = roon.getOrPut(coreId) { LinkedHashMap() }
+
+    override fun saveRoonAlbums(coreId: String, rows: List<RoonAlbumRow>): Pair<Int, Int> {
+        val table = roonFor(coreId)
+        var stored = 0
+        for (r in rows) {
+            // First one wins, like the SQLite half's ON CONFLICT DO NOTHING.
+            if (table.containsKey(r.albumKey)) continue
+            table[r.albumKey] = r
+            stored++
+        }
+        return stored to (rows.size - stored)
+    }
+
+    override fun roonAlbums(coreId: String): List<RoonAlbumRow> =
+        roonFor(coreId).values.sortedBy { it.position }
+
+    override fun roonAlbum(coreId: String, albumKey: String): RoonAlbumRow? =
+        roonFor(coreId)[albumKey]
+
+    override fun roonAlbumCount(coreId: String): Int = roonFor(coreId).size
+
+    override fun setRoonAlbumTrackCount(coreId: String, albumKey: String, trackCount: Int?) {
+        val table = roonFor(coreId)
+        table[albumKey]?.let { table[albumKey] = it.copy(trackCount = trackCount) }
+    }
+
+    override fun clearRoonAlbums(coreId: String) { roonFor(coreId).clear() }
+
+    override fun saveRoonScan(summary: com.musicd.migrate.roon.RoonScanSummary) {
+        roonScanRow = summary
+    }
+
+    override fun roonScan(): com.musicd.migrate.roon.RoonScanSummary? = roonScanRow
+
     override fun cachedMatch(fromService: String, fromId: String, toService: String,
                              kind: String): CachedMatch? =
         cache[key(fromService, fromId, toService, kind)]

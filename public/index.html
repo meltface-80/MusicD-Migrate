@@ -24,7 +24,8 @@
 
 <header class="top">
   <h1>MusicD&nbsp;Migrate</h1>
-  <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify.</p>
+  <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify —
+    or find your Roon library on either of them.</p>
 </header>
 
 <main id="main" hidden>
@@ -143,6 +144,56 @@
         </div>
       </div>
     </div>
+
+    <div class="svc" id="svc-roon">
+      <div class="svc-head">
+        <span class="dot" id="roon-dot"></span>
+        <strong>Roon</strong>
+        <span class="who" id="roon-who"></span>
+        <button class="ghost" id="roon-forget" hidden>Find another Core</button>
+      </div>
+      <div class="svc-body" id="roon-body">
+        <p class="hint">
+          Your own library, read out of Roon and looked for on Qobuz or Spotify.
+          <b>One direction only</b> — nothing can be written back into a local library,
+          because the files would have to exist first.
+        </p>
+        <p class="hint">
+          <b>Albums and artists, not tracks or playlists.</b> A Roon browse row gives a
+          title and an artist and not a track's length, and a title and artist alone are
+          exactly what a cover, a re-recording and a live take all satisfy. Matching on
+          that would quietly put the wrong recording in your library.
+        </p>
+        <div class="row">
+          <button class="primary" id="roon-connect">Find my Roon Core</button>
+        </div>
+        <details id="roon-manual">
+          <summary>Or type its address</summary>
+          <p class="hint">
+            Discovery is a UDP broadcast, which some networks drop. The Core's address and
+            port are in Roon under Settings → General.
+          </p>
+          <div class="row">
+            <input type="text" id="roon-host" placeholder="192.168.1.10" spellcheck="false"
+                   autocomplete="off">
+            <input type="text" id="roon-port" placeholder="9330" inputmode="numeric"
+                   autocomplete="off">
+            <button id="roon-connect-manual">Connect</button>
+          </div>
+        </details>
+        <p class="hint" id="roon-detail"></p>
+      </div>
+      <div class="svc-body" id="roon-library" hidden>
+        <p class="hint" id="roon-detail-paired"></p>
+        <div class="row">
+          <button class="primary" id="roon-scan">Scan my library</button>
+          <button class="ghost" id="roon-scan-cancel" hidden>Stop the scan</button>
+          <a class="ghost btn" id="roon-csv" download hidden>Download the library (CSV)</a>
+        </div>
+        <div class="bar" id="roon-bar" hidden><div class="fill" id="roon-fill"></div></div>
+        <p class="hint" id="roon-scan-note"></p>
+      </div>
+    </div>
   </section>
 
   <!-- ----------------------------------------------------------- the run -->
@@ -154,6 +205,10 @@
         Qobuz <span aria-hidden="true">→</span> Spotify</button>
       <button class="dir" id="dir-s2q" data-dir="spotify-to-qobuz">
         Spotify <span aria-hidden="true">→</span> Qobuz</button>
+      <button class="dir" id="dir-r2s" data-dir="roon-to-spotify">
+        Roon <span aria-hidden="true">→</span> Spotify</button>
+      <button class="dir" id="dir-r2q" data-dir="roon-to-qobuz">
+        Roon <span aria-hidden="true">→</span> Qobuz</button>
     </div>
 
     <div class="kinds">
@@ -162,6 +217,7 @@
       <label><input type="checkbox" id="k-artists" checked> Followed artists</label>
       <label><input type="checkbox" id="k-tracks" checked> Favourite tracks</label>
     </div>
+    <p class="hint" id="kinds-note" hidden></p>
 
     <div id="playlist-pick" hidden>
       <div class="pl-head">
@@ -185,6 +241,13 @@
         <input type="checkbox" id="o-strict">
         <span><b>Only certain matches</b> — accept a track only when both services agree on
         its ISRC. Fewer records move; every one that does is the same recording.</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="o-corroborate" checked>
+        <span><b>Check an album's track listing</b> — when there is no barcode to go on,
+        confirm a title-and-artist album match against the album's own tracks before
+        accepting it. Costs a couple of extra lookups per album and is the difference
+        between the record you own and a different one with the same name.</span>
       </label>
       <label class="opt">
         <input type="checkbox" id="o-others">

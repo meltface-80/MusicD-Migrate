@@ -129,17 +129,128 @@
     }
     if (sp.clientId) $("spotify-setup").open = false;
 
+    renderRoon();
+
     $("cache-note").textContent = state.cacheSize
       ? state.cacheSize + " cached lookups — a re-run reuses these"
       : "no cached lookups yet";
 
-    var ready = q.signedIn && sp.signedIn;
-    $("go").disabled = !ready;
-    $("go-hint").textContent = ready ? "" : "Sign in to both services first.";
+    var blocked = whyNotReady();
+    $("go").disabled = !!blocked;
+    $("go-hint").textContent = blocked || "";
 
     updateGoLabel();
+    renderKinds();
     renderPlaylistSection();
   }
+
+  /**
+   * What is stopping a run, or "" — named specifically.
+   *
+   * Only the two ends actually involved. "Sign in to both services first" for
+   * a Roon migration would be asking for a sign-in the run does not use.
+   */
+  function whyNotReady() {
+    if (!state) return "Loading…";
+    var ends = direction.split("-to-");
+    for (var i = 0; i < ends.length; i++) {
+      var end = ends[i];
+      if (end === "qobuz" && !state.qobuz.signedIn) return "Sign in to Qobuz first.";
+      if (end === "spotify" && !state.spotify.signedIn) return "Sign in to Spotify first.";
+      if (end === "roon") {
+        var r = state.roon || {};
+        if (!r.paired) return "Pair with your Roon Core first.";
+        if (!r.albums) return "Scan your Roon library first.";
+        if (r.scanning) return "Wait for the library scan to finish.";
+      }
+    }
+    return "";
+  }
+
+  // -------------------------------------------------------------- Roon
+
+  function renderRoon() {
+    var r = (state && state.roon) || { stage: "idle" };
+    var paired = !!r.paired;
+    $("roon-dot").className = "dot" + (paired ? " on" :
+      (r.stage === "error" ? " bad" : (r.stage === "idle" ? "" : " busy")));
+    $("roon-who").textContent = paired
+      ? (r.coreName || "paired")
+      : (r.stage === "idle" ? "not connected" : r.stage.replace(/-/g, " "));
+    $("roon-body").hidden = paired;
+    $("roon-library").hidden = !paired;
+    $("roon-forget").hidden = !(paired || r.stage === "error");
+    $("roon-detail").textContent = paired ? "" : (r.detail || "");
+    $("roon-detail-paired").textContent = paired ? (r.detail || "") : "";
+
+    var note = $("roon-scan-note");
+    var p = r.progress;
+    $("roon-bar").hidden = !r.scanning;
+    $("roon-scan-cancel").hidden = !r.scanning;
+    $("roon-scan").disabled = !!r.scanning;
+    if (r.scanning && p) {
+      var pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
+      $("roon-fill").style.width = pct + "%";
+      note.textContent = "Scanning — " + p.done + (p.total ? " of " + p.total : "") +
+        " albums" + (p.duplicates ? ", " + p.duplicates + " duplicates" : "");
+    } else if (r.albums) {
+      note.textContent = r.albums + " albums scanned" +
+        (r.scan && r.scan.duplicates
+          ? " (" + r.scan.duplicates + " duplicate " +
+            (r.scan.duplicates === 1 ? "copy" : "copies") + " of records you own twice)"
+          : "") +
+        (r.scan && r.scan.done === false ? " — the scan did not finish" : "");
+    } else {
+      note.textContent = paired ? "Nothing scanned yet." : "";
+    }
+
+    var csv = $("roon-csv");
+    csv.hidden = !r.albums;
+    csv.href = "/api/roon/library.csv" + (pin ? "?pin=" + encodeURIComponent(pin) : "");
+
+    // Poll while anything is in flight, and stop when nothing is. A Roon pair
+    // can sit on "waiting to be enabled" for minutes while the user walks to
+    // the Roon window, so the page has to keep looking.
+    var busy = r.scanning || (r.stage !== "idle" && r.stage !== "paired" &&
+                              r.stage !== "error");
+    if (busy && !roonTimer) roonTimer = setInterval(function () {
+      refresh().catch(function () {});
+    }, 2000);
+    if (!busy && roonTimer) { clearInterval(roonTimer); roonTimer = null; }
+  }
+
+  var roonTimer = null;
+
+  $("roon-connect").addEventListener("click", function () {
+    $("roon-connect").disabled = true;
+    api("/api/roon/connect", { method: "POST", body: {} })
+      .then(function () { toast("Looking for a Roon Core…"); })
+      .then(refresh)
+      .catch(fail)
+      .then(function () { $("roon-connect").disabled = false; });
+  });
+  $("roon-connect-manual").addEventListener("click", function () {
+    var host = $("roon-host").value.trim();
+    if (!host) return toast("Type the Core's address.");
+    api("/api/roon/connect", { method: "POST", body: {
+      host: host, port: Number($("roon-port").value) || 9330 } })
+      .then(function () { toast("Connecting…"); }).then(refresh).catch(fail);
+  });
+  $("roon-forget").addEventListener("click", function () {
+    api("/api/roon/forget", { method: "POST" })
+      .then(function () { toast("Looking again…"); }).then(refresh).catch(fail);
+  });
+  $("roon-scan").addEventListener("click", function () {
+    var r = (state && state.roon) || {};
+    var resume = !!(r.scan && r.scan.done === false && r.scan.offset > 0);
+    api("/api/roon/scan", { method: "POST", body: { resume: resume } })
+      .then(function () { toast(resume ? "Carrying on from where it stopped…" : "Scanning…"); })
+      .then(refresh).catch(fail);
+  });
+  $("roon-scan-cancel").addEventListener("click", function () {
+    api("/api/roon/scan/cancel", { method: "POST" })
+      .then(function () { toast("Stopping the scan…"); }).then(refresh).catch(fail);
+  });
 
   // ------------------------------------------------------------- Qobuz
 
@@ -256,12 +367,34 @@
       // playlists while migrating from Qobuz.
       playlists = [];
       chosen.clear();
-      renderPlaylistSection();
+      render();
     });
   });
 
-  function sourceService() {
-    return direction === "qobuz-to-spotify" ? "qobuz" : "spotify";
+  function sourceService() { return direction.split("-to-")[0]; }
+
+  /**
+   * Turn off the kinds the source cannot offer, and say why.
+   *
+   * Not merely disabled: the reason is printed. A greyed-out box with no
+   * explanation reads as a bug, and the reason here is the whole argument for
+   * why Roon albums are safe to migrate and Roon tracks are not.
+   */
+  function renderKinds() {
+    var fromRoon = sourceService() === "roon";
+    var note = $("kinds-note");
+    ["k-playlists", "k-tracks"].forEach(function (id) {
+      var cb = $(id);
+      cb.disabled = fromRoon;
+      if (fromRoon) cb.checked = false;
+      cb.parentNode.classList.toggle("off", fromRoon);
+    });
+    note.hidden = !fromRoon;
+    note.textContent = fromRoon
+      ? "Playlists and favourite tracks are not migrated from Roon: a Roon browse row " +
+        "carries no track length, and a title and artist alone are what a cover, a " +
+        "re-recording and a live take all satisfy. Albums and artists are."
+      : "";
   }
 
   // ---------------------------------------------------------- playlists
@@ -282,8 +415,7 @@
     // Both sign-ins, not just the source's: the picker is part of a migration
     // that cannot start without both, and an empty list box on a page where
     // nothing is signed in reads as "you have no playlists".
-    var ready = !!(state && state.qobuz.signedIn && state.spotify.signedIn);
-    var want = $("k-playlists").checked && ready;
+    var want = $("k-playlists").checked && !whyNotReady();
     $("playlist-pick").hidden = !want;
     if (!want) return;
     if (!playlists.length) loadPlaylists(false);
@@ -366,6 +498,7 @@
       tracks: $("k-tracks").checked,
       dryRun: $("o-dry").checked,
       strict: $("o-strict").checked,
+      corroborate: $("o-corroborate").checked,
       includeOthersPlaylists: $("o-others").checked,
       onExisting: $("o-existing").value,
       playlistSuffix: $("o-suffix").value
