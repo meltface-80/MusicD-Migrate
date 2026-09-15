@@ -191,6 +191,16 @@ directory as-is.
   because an earlier version returned it and thereby **hid the exact bug it
   should have exposed** — the title path "matched on barcode" under test while
   failing in production.
+- **The README's appendix carries a working Client ID; the CODE still ships
+  none.** Spotify's registrations are frozen, so re-finding a shared id after a
+  reinstall is a real nuisance and one is written down at the bottom of the
+  README for that reason. It is not a default and must not become one: both
+  halves read `spotify.clientId` from the store with an empty fallback, the
+  field is blank on a fresh install, and the page still says the choice is the
+  user's. A client id is not secret — PKCE means there is no client secret, and
+  the id travels in the authorise URL in plain sight — but it belongs to
+  another project, so the appendix says whose quota it spends and whose name
+  the consent screen shows.
 - **Spotify's redirect path is `/login`, not `/api/spotify/callback`.** The
   shared community Client IDs — the only ones available while Spotify has new
   registrations frozen — whitelist exactly one loopback path, and any other
