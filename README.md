@@ -542,6 +542,43 @@ over a real socket.
 
 ---
 
+## Appendix: the Client ID this install uses
+
+Kept here because Spotify's registrations are frozen and re-finding one after a
+reinstall is a nuisance, not because it is a recommendation.
+
+```
+d420a117a32841c2b3474932e49fb54b
+```
+
+Paste it into the **Spotify Client ID** field. What it is, plainly:
+
+* **It is not registered to MusicD Migrate.** It comes from the open-source
+  Spotify world, which has long shared a well-known id among its users because
+  Spotify will not issue new ones. It works here for exactly one reason: the
+  loopback path `/login` is whitelisted on it, which is why this app's redirect
+  path is `/login` and not `/api/spotify/callback`.
+* **The consent screen will name that application, not this one**, and your
+  requests count against its quota. If it is ever rate-limited or withdrawn,
+  the Spotify half of this app stops working and there is nothing to be done
+  about it from here.
+* **It is not a secret.** Sign-in uses PKCE, there is no client secret, and a
+  client id travels in the query string of the authorise URL in plain sight
+  every time anyone signs in to anything. Writing it down changes nothing about
+  who can see it.
+* **Nothing in the code uses it.** The field is empty on a fresh install and
+  stays empty until somebody pastes something in — `store.get("spotify.clientId",
+  "")` in `index.js`, `store.setting("spotify.clientId").orEmpty()` in
+  `MigrateApi.kt`, no fallback on either side. That is deliberate and it stays
+  that way: a borrowed id is a choice the person installing this makes, not one
+  the app makes for them.
+
+If you do get a registration of your own, use that instead: add
+`http://127.0.0.1:3380/login` under **Redirect URIs** and paste your own id
+over this one.
+
+---
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
