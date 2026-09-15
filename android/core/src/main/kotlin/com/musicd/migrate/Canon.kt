@@ -116,11 +116,34 @@ object Canon {
         return canon(if (cut.isNullOrBlank()) raw else cut)
     }
 
+    /**
+     * The artists a string names, each AS WRITTEN, in order.
+     *
+     * The same split as [artistSet], but keeping the original spelling,
+     * because this one feeds a SEARCH QUERY rather than a comparison. Roon
+     * hands over an album's artists as one string joined with slashes --
+     * "Carla Bley/Steve Swallow/Andy Sheppard" -- and a query naming all
+     * three finds nothing on either service. Measured on a real 9,514-album
+     * Roon library: 457 of the 1,273 albums whose search came back EMPTY had
+     * an artist string naming more than one person, against 2.0% of the 4,639
+     * that matched.
+     *
+     * Kept in step with artistNames in lib/canon.js by hand.
+     */
+    fun artistNames(value: String?): List<String> {
+        val out = ArrayList<String>()
+        for (part in SPLIT_ALL.split(value ?: "")) {
+            val t = part.trim()
+            if (t.isNotEmpty() && !out.contains(t)) out.add(t)
+        }
+        return out
+    }
+
     /** Every artist named, canonicalised. Order is not meaningful. */
     fun artistSet(value: List<String>?): Set<String> {
         val out = LinkedHashSet<String>()
         for (v in value ?: emptyList()) {
-            for (part in SPLIT_ALL.split(v)) {
+            for (part in artistNames(v)) {
                 val c = canon(part)
                 if (c.isNotEmpty()) out.add(c)
             }

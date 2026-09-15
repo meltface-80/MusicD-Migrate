@@ -669,6 +669,23 @@
 
   // ----------------------------------------------------------- history
 
+  /**
+   * "roon-to-qobuz" as "Roon → Qobuz".
+   *
+   * Derived from the id, not a two-way guess. This was
+   * `d === "qobuz-to-spotify" ? … : "Spotify → Qobuz"`, written when those
+   * were the only two directions, and every Roon run in the history list was
+   * therefore labelled "Spotify → Qobuz" — a wrong label on the one screen
+   * that says what a past run did.
+   */
+  function directionLabel(d) {
+    var parts = String(d || "").split("-to-");
+    if (parts.length !== 2) return String(d || "");
+    return parts.map(function (p) {
+      return p.charAt(0).toUpperCase() + p.slice(1);
+    }).join(" → ");
+  }
+
   function loadHistory() {
     api("/api/jobs").then(function (j) {
       var box = $("history-list");
@@ -686,8 +703,7 @@
 
         var d = document.createElement("span");
         d.className = "dirlabel";
-        d.textContent = job.direction === "qobuz-to-spotify" ? "Qobuz → Spotify"
-                                                             : "Spotify → Qobuz";
+        d.textContent = directionLabel(job.direction);
         row.appendChild(d);
 
         if (job.dryRun) {
@@ -717,6 +733,12 @@
         view.addEventListener("click", function () {
           $("results").hidden = false;
           $("res-title").textContent = "Report";
+          // Same as finish(): a run that stopped says why. Without this,
+          // reopening a failed run from the history showed the counts and no
+          // reason at all — or, worse, the reason from a different run.
+          var herr = $("res-error");
+          herr.textContent = job.error || "";
+          herr.hidden = !job.error;
           renderCounts($("res-counts"), job.counts || {}, null);
           $("res-csv").href = "/api/job/" + job.id + "/report.csv" +
             (pin ? "?pin=" + encodeURIComponent(pin) : "");

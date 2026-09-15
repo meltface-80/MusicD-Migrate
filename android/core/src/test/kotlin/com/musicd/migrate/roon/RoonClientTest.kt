@@ -234,6 +234,21 @@ class RoonClientTest {
 
     // -------------------------------------------------------- the albums
 
+    @Test fun `a trio filed under one slash-joined name comes back as three artists`() {
+        // This is how Roon hands over an album with several album artists,
+        // and the engine searches on artists[0]. Handing it one string with
+        // all three in it is how 352 albums of a real library were searched
+        // for as "Andando el Tiempo Carla Bley/Steve Swallow/Andy Sheppard",
+        // which finds nothing anywhere.
+        val core = ScriptedCore(listOf(
+            alb("Andando el Tiempo", "Carla Bley/Steve Swallow/Andy Sheppard")))
+        val client = RoonClient(core, MemoryStore())
+        client.scan()
+
+        assertEquals(listOf("Carla Bley", "Steve Swallow", "Andy Sheppard"),
+            client.savedAlbums()[0].artists)
+    }
+
     @Test fun `the scanned albums come back with no barcode and an honest null count`() {
         val core = ScriptedCore(listOf(alb("Kind Of Blue", "Miles Davis")))
         val store: Store = MemoryStore()

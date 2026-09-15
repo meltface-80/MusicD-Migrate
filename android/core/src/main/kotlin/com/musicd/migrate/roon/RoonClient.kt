@@ -282,7 +282,10 @@ class RoonClient(
                 id = it.albumKey,
                 upc = "",                    // Roon has none. Missing data, not evidence.
                 title = it.title,
-                artists = if (it.artist.isEmpty()) emptyList() else listOf(it.artist),
+                // Split, not one glued string: Roon writes several album
+                // artists as "Carla Bley/Steve Swallow/Andy Sheppard", and
+                // the engine searches on artists[0]. See Canon.artistNames.
+                artists = Canon.artistNames(it.artist),
                 trackCount = it.trackCount   // null until something drills in
             )
         }

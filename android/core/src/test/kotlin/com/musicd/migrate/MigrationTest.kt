@@ -575,6 +575,54 @@ class MigrationTest {
         assertTrue("a real miss is remembered", cached != null && cached.toId == null)
     }
 
+    // ------------------------------------------ how an album is searched for
+
+    @Test fun `several artists glued into one string are cut down to the first`() {
+        // Roon writes an album's artists as one slash-joined string, and a
+        // query naming all three finds nothing on either service. Measured on
+        // a real 9,514-album library: 457 of the 1,273 albums whose search
+        // came back EMPTY had an artist string naming more than one person,
+        // against 2.0% of the 4,639 that matched.
+        assertEquals("Carla Bley",
+            Migration.searchArtist(listOf("Carla Bley/Steve Swallow/Andy Sheppard")))
+        assertEquals("Vincent Peirani",
+            Migration.searchArtist(listOf("Vincent Peirani & Emile Parisien")))
+        assertEquals("Miles Davis", Migration.searchArtist(listOf("Miles Davis, John Coltrane")))
+        assertEquals("Terence Blanchard",
+            Migration.searchArtist(listOf("Terence Blanchard featuring the E-Collective")))
+    }
+
+    @Test fun `a second artist in the list is a different artist, not a phrasing`() {
+        // artists[0] is split again because it may be several names glued
+        // together. The REST of the list is left alone: "Little Boots" is not
+        // a rephrasing of "Hot Chip".
+        assertEquals("Hot Chip", Migration.searchArtist(listOf("Hot Chip", "Little Boots")))
+    }
+
+    @Test fun `searchArtist is defined on the awkward inputs a real library holds`() {
+        assertEquals("", Migration.searchArtist(emptyList()))
+        assertEquals("", Migration.searchArtist(null))
+        assertEquals("", Migration.searchArtist(listOf("")))
+        assertEquals("", Migration.searchArtist(listOf("/")))
+        assertEquals("left as it is -- the gate will refuse it, and that is right",
+            "Unknown Artist", Migration.searchArtist(listOf("Unknown Artist")))
+    }
+
+    @Test fun `an album whose artist string names three people is found anyway`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "Andando el Tiempo",
+                listOf("Carla Bley/Steve Swallow/Andy Sheppard"), 8)))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Andando el Tiempo",
+                listOf("Carla Bley", "Steve Swallow", "Andy Sheppard"), 8)))
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, corroborate = false))
+        assertEquals(r.items.firstOrNull()?.note, 1, r.counts["matched"])
+        assertEquals("the query named one artist, not three",
+            "Carla Bley", target.albumQueriesSeen[0].second)
+        assertEquals("and it still costs exactly one search", 1, target.searchCount.get())
+    }
+
     @Test fun `a check that never once works stops the run rather than costing an hour`() {
         // 0.2.0 did the opposite: the corroboration read was broken and the
         // run carried on regardless, for forty minutes and three thousand

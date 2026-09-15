@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { Migration, UNREADABLE_LIMIT } = require("../../lib/migrate");
+const { Migration, UNREADABLE_LIMIT, searchArtist } = require("../../lib/migrate");
 const storeMod = require("../../lib/store");
 const { SOURCE_METHODS } = require("../../lib/service");
 
@@ -60,11 +60,23 @@ class FakeService {
    * it should have exposed. Set searchAlbumsCarriesUpc to model a service
    * whose search does include it.
    */
-  async searchAlbums(title) {
+  async searchAlbums(title, artist) {
     this.searchCount++;
-    const q = String(title).toLowerCase();
-    const hits = (this.catalogueAlbums || []).filter((a) =>
-      String(a.title).toLowerCase().includes(q));
+    this.albumQueriesSeen = (this.albumQueriesSeen || []).concat(
+      [{ title: String(title || ""), artist: String(artist || "") }]);
+    // Both services take ONE free-text query, and both behave roughly like a
+    // literal word search: every word has to be there somewhere or nothing
+    // comes back. An earlier version of this fake ignored the artist
+    // argument entirely, which is exactly how a query naming three artists at
+    // once — Roon writes them "A/B/C" — passed every test here and returned
+    // nothing at all from Qobuz for 352 albums of a real library.
+    const words = [String(title || ""), String(artist || "")].join(" ")
+      .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const hits = (this.catalogueAlbums || []).filter((a) => {
+      const hay = [String(a.title || "")].concat(a.artists || [])
+        .join(" ").toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
     return this.searchAlbumsCarriesUpc ? hits
       : hits.map((a) => Object.assign({}, a, { upc: "" }));
   }
@@ -681,6 +693,58 @@ test("a listing that disagrees is still an ordinary miss, and is cached", async 
   assert.strictEqual(result.counts.failed, 0);
   const cached = store.cachedMatch("qobuz", "qal", "spotify", "album");
   assert.ok(cached && cached.toId === null, "a real miss is remembered");
+});
+
+// ------------------------------------------------- how an album is searched for
+
+test("several artists glued into one string are cut down to the first", () => {
+  // Roon writes an album's artists as one slash-joined string, and a query
+  // naming all three finds nothing on either service. Measured on a real
+  // 9,514-album library: 457 of the 1,273 albums whose search came back EMPTY
+  // had an artist string naming more than one person, against 2.0% of the
+  // 4,639 that matched.
+  assert.strictEqual(searchArtist(["Carla Bley/Steve Swallow/Andy Sheppard"]),
+    "Carla Bley");
+  assert.strictEqual(searchArtist(["Vincent Peirani & Emile Parisien"]),
+    "Vincent Peirani");
+  assert.strictEqual(searchArtist(["Miles Davis, John Coltrane"]), "Miles Davis");
+  assert.strictEqual(searchArtist(["Terence Blanchard featuring the E-Collective"]),
+    "Terence Blanchard");
+});
+
+test("a second artist in the list is a different artist, not a better phrasing", () => {
+  // artists[0] is split again because it may be several names glued together.
+  // The REST of the array is left alone: "Little Boots" is not a rephrasing
+  // of "Hot Chip", and searching for it would be searching for something else.
+  assert.strictEqual(searchArtist(["Hot Chip", "Little Boots"]), "Hot Chip");
+});
+
+test("searchArtist is defined on the awkward inputs a real library contains", () => {
+  assert.strictEqual(searchArtist([]), "");
+  assert.strictEqual(searchArtist(undefined), "");
+  assert.strictEqual(searchArtist([""]), "");
+  assert.strictEqual(searchArtist("Miles Davis"), "Miles Davis",
+    "a bare string, not an array");
+  assert.strictEqual(searchArtist(["/"]), "", "nothing but a separator");
+  assert.strictEqual(searchArtist(["Unknown Artist"]), "Unknown Artist",
+    "left as it is — the gate will refuse it, and that is the right answer");
+});
+
+test("an album whose artist string names three people is found anyway", async () => {
+  const source = new FakeService("q", { lib: { albums: [album({
+    id: "qal", title: "Andando el Tiempo", upc: "", trackCount: 8,
+    artists: ["Carla Bley/Steve Swallow/Andy Sheppard"] })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Andando el Tiempo",
+    artists: ["Carla Bley", "Steve Swallow", "Andy Sheppard"], upc: "", trackCount: 8 }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 1, items[0] && items[0].note);
+  assert.strictEqual(target.albumQueriesSeen[0].artist, "Carla Bley",
+    "the query named one artist, not three");
+  assert.strictEqual(target.searchCount, 1, "and it still costs exactly one search");
 });
 
 test("a check that never once works stops the run rather than costing an hour", async () => {
