@@ -1,6 +1,6 @@
 {
-  "version": "0.2.1",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.1.apk",
-  "sha256": "458fc078f51ca8f658e097c76b192055a4aa282fb2b30296347d6837344d5be9",
-  "notes": "A read that failed is now reported as a FAILURE rather than as \"not found\", and is never cached, so a broken lookup cannot be mistaken for a library that is not there. Qobuz album track listings are read without an undefined parameter, which is one demonstrable cause of 0.2.0's albums all reporting not found. A run whose track-listing check never once works now stops and says why instead of searching for thousands of albums it could not have matched. The CSV download buttons work in the app at last — they did nothing at all from v0.1.0."
+  "version": "0.2.2",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.2.apk",
+  "sha256": "24da7d1ad25a41ab6fdbf5a7e3c045146ceb3cc6bcc385a9ec02246e849e15b3",
+  "notes": "Searches now name ONE artist. Roon writes an album's artists as one slash-joined string and the whole thing went into the query, which found nothing: 457 of the 1,273 albums whose Qobuz search came back empty on a real 9,514-album library were that. A read that failed is reported as a failure rather than as \"not found\", and is never cached. A run whose track-listing check never once works stops and says why, on the page. The CSV download buttons work in the app at last — they did nothing at all from v0.1.0. Previous runs no longer label every Roon run \"Spotify to Qobuz\"."
 }
