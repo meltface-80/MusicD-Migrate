@@ -3,6 +3,7 @@ package com.musicd.migrate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -141,6 +142,58 @@ class MatchTest {
                 artists = listOf("Fleetwood Mac"), trackCount = 34)),
             Album(id = "q", title = "Rumours", artists = listOf("Fleetwood Mac"),
                 trackCount = 11)).method)
+    }
+
+    @Test fun `a tag that repeats the title's own words is not a different record`() {
+        // From a real library: the service appends a parenthetical the title
+        // already says. Refusing that is refusing a record over nothing.
+        val r = Match.matchAlbum(
+            listOf(Album(id = "a", title = "Always Let Me Go - Live In Tokyo (Live In Tokyo)",
+                artists = listOf("Keith Jarrett"))),
+            Album(id = "q", title = "Always Let Me Go - Live In Tokyo",
+                artists = listOf("Keith Jarrett")))
+        assertNotNull(r.reason, r.album)
+        assertTrue(r.reason, r.reason.contains("ignoring \"(Live In Tokyo)\""))
+        assertTrue(r.reason,
+            r.reason.contains("only repeats what the title or the artist already says"))
+    }
+
+    @Test fun `a tag that is just the artist's name adds nothing either`() {
+        // Either side may carry it: services append "(Nina Simone)", Roon
+        // rips append ": Stan Getz".
+        val theirs = Match.matchAlbum(
+            listOf(Album(id = "a", title = "33 Hits (Nina Simone)",
+                artists = listOf("Nina Simone"))),
+            Album(id = "q", title = "33 Hits", artists = listOf("Nina Simone")))
+        assertNotNull(theirs.reason, theirs.album)
+        assertTrue(theirs.reason, theirs.reason.contains("ignoring \"(Nina Simone)\""))
+
+        val ours = Match.matchAlbum(
+            listOf(Album(id = "a", title = "Jazz 'Round Midnight",
+                artists = listOf("Stan Getz"))),
+            Album(id = "q", title = "Jazz 'Round Midnight: Stan Getz",
+                artists = listOf("Stan Getz")))
+        assertNotNull(ours.reason, ours.album)
+    }
+
+    @Test fun `a tag that says something NEW is still a different record`() {
+        // The whole reason the rule above is allowed. None of these repeats
+        // anything: they each add a fact, and the fact is what makes it a
+        // different record -- a live take, a remix album, a second volume.
+        fun refuse(mine: String, theirs: String, artist: String) {
+            val r = Match.matchAlbum(
+                listOf(Album(id = "a", title = theirs, artists = listOf(artist))),
+                Album(id = "q", title = mine, artists = listOf(artist)))
+            assertNull("$theirs must not be accepted for $mine: ${r.reason}", r.album)
+        }
+        refuse("Rio", "Rio (Live)", "Keith Jarrett")
+        refuse("Blue Lines", "Blue Lines - The Remixes", "Massive Attack")
+        refuse("Greatest Hits", "Greatest Hits: Volume 2", "Queen")
+        refuse("Pearls & Embarrassments", "Pearls & Embarrassments, Vol. 2", "Someone")
+        refuse("Aftersun", "Aftersun (Acoustic)", "Someone")
+        // The shortest tag is tried first, so a title with two of them cannot
+        // be cut back to something nobody owns.
+        refuse("Day of the Gusano", "Day Of The Gusano - Live In Mexico (Live)", "Slipknot")
     }
 
     @Test fun `a refusal names what the other service DID have, by that artist`() {

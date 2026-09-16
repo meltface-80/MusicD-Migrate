@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 212 tests
+npm test                                                  # 218 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 201 tests
+cd android && ./gradlew :core:test                         # 207 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -259,6 +259,41 @@ directory as-is.
   came back amber "not found", and it read as a library that is not on the other
   service rather than as a thing that was broken. It took a live run, a
   screenshot and an experiment with the check turned off to find.
+- **AN ARTIST'S NAME MAY CONTAIN THE SEPARATOR.** "Carla Bley/Steve
+  Swallow/Andy Sheppard" is three people; "AC/DC" is one band, so is
+  "Belle & Sebastian", and "Earth, Wind & Fire" has both a comma and an
+  ampersand in its name. `splitArtists` therefore treats a comma, semicolon,
+  slash or ampersand as a separator **only when every segment it produces is
+  more than one word** — two people are a first name and a last name on both
+  sides, and a band with punctuation in its name almost always has a one-word
+  piece. `feat.`, `ft.`, `featuring`, `with` and `vs` are never part of a name
+  and always split. 88 albums of a real 9,635-album library were refused
+  because the splitter had cut a band's own name in half.
+- **`artistSet` carries the name AS WRITTEN as well as its parts**, and that
+  is what makes two spellings of one name agree. Roon writes "Siouxsie and the
+  Banshees", the service writes "Siouxsie & The Banshees", `canon` turns "&"
+  into "and" so the two ARE the same string — but the split ran first, cut the
+  service's name into "Siouxsie" and "The Banshees", and left nothing to agree
+  with. 42 albums, refused over a spelling. Same for "To/Die/For" against
+  "To Die For". The set also holds each form without a leading article and
+  without a trailing ensemble word (`ENSEMBLE_WORDS`: trio, quartet,
+  orchestra…), because "Vijay Iyer Trio" and "Vijay Iyer" are one artist
+  billed two ways and jazz does it constantly. Every entry is still a name the
+  string actually contains — **"tribute", "covers", "band" and "project" are
+  deliberately NOT ensemble words**, because a tribute act is somebody else
+  and that is the mistake this module exists to prevent. `MatchTest` and
+  `CanonTest` both pin "Portishead" ≠ "Portishead Tribute"; keep them.
+- **A tag that repeats what the title already says is not a difference.**
+  `redundantTag` in both halves: a trailing "(…)", " - …" or ": …" is ignored
+  when every word in it already appears in the other side's title or in the
+  artist's name, and the rest of the title matches exactly. Services append
+  "Always Let Me Go - Live In Tokyo **(Live In Tokyo)**" and "33 Hits **(Nina
+  Simone)**"; Roon rips append "Jazz 'Round Midnight**: Stan Getz**". None of
+  those adds a fact. A tag that DOES add one — `(Live)` on a title that never
+  mentions live, `Vol. 2`, `(Remixes)`, `(Acoustic)` — fails the test and the
+  album is still refused, **and that is the only reason this is allowed at
+  all**. The tags are tried SHORTEST first, or a title with two of them gets
+  cut back to something nobody owns.
 - **A SEARCH takes one artist, not everything the source calls the artist.**
   `searchArtist`, in both languages. Roon writes an album's artists as one
   slash-joined string — "Carla Bley/Steve Swallow/Andy Sheppard" — and Qobuz
