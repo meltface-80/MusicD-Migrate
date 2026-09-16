@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 210 tests
+npm test                                                  # 212 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 197 tests
+cd android && ./gradlew :core:test                         # 201 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -191,16 +191,24 @@ directory as-is.
   because an earlier version returned it and thereby **hid the exact bug it
   should have exposed** — the title path "matched on barcode" under test while
   failing in production.
-- **The README's appendix carries a working Client ID; the CODE still ships
-  none.** Spotify's registrations are frozen, so re-finding a shared id after a
-  reinstall is a real nuisance and one is written down at the bottom of the
-  README for that reason. It is not a default and must not become one: both
-  halves read `spotify.clientId` from the store with an empty fallback, the
-  field is blank on a fresh install, and the page still says the choice is the
-  user's. A client id is not secret — PKCE means there is no client secret, and
-  the id travels in the authorise URL in plain sight — but it belongs to
-  another project, so the appendix says whose quota it spends and whose name
-  the consent screen shows.
+- **A Spotify Client ID IS baked in, as a fallback, and the docs say whose it
+  is.** `DEFAULT_CLIENT_ID` in `lib/spotify-pkce.js` and
+  `Pkce.DEFAULT_CLIENT_ID`. Spotify's registrations are frozen, so "get your
+  own" is not a step the owner of this repository can complete, and an app that
+  demands one is simply unusable — that is why this changed, at the owner's
+  explicit request, from "ships none" to "ships one".
+  Three things hold it together and must stay:
+  **a saved id always wins** (both halves resolve it through ONE function —
+  `spotifyClientId()` — because a fallback applied at three sites out of four
+  is a sign-in that starts as one application and redeems the code as another,
+  and Spotify's error then talks about the code);
+  **the two constants and the README appendix must agree**, which `ContractTest`
+  enforces, or the phone and the container sign in as different applications;
+  and **the page and the appendix say what it costs** — the id belongs to
+  another project, so the consent screen names that application and the
+  requests count against its quota. Do not quietly drop those caveats to tidy
+  the copy. A client id is not secret: PKCE means there is no client secret and
+  the id travels in the authorise URL in plain sight.
 - **Spotify's redirect path is `/login`, not `/api/spotify/callback`.** The
   shared community Client IDs — the only ones available while Spotify has new
   registrations frozen — whitelist exactly one loopback path, and any other

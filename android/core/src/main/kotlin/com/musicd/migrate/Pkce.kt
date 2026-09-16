@@ -67,6 +67,32 @@ object Pkce {
      *  somebody's own app before /login became the default. */
     const val LEGACY_CALLBACK_PATH = "/api/spotify/callback"
 
+    /**
+     * The Client ID used when nobody has saved one.
+     *
+     * Spotify's registrations are frozen, so for the person this was built
+     * for there is no such thing as "get your own" — asking for one that
+     * cannot be obtained just makes the app unusable. So it is baked in, at
+     * the owner's explicit request, with all of this stated in the open:
+     *
+     * - **It is not registered to MusicD Migrate.** It is one of the
+     *   well-known ids the open-source Spotify world shares, and it works
+     *   here for exactly one reason: `/login` is whitelisted on it (see
+     *   [CALLBACK_PATH]).
+     * - **The consent screen names that application, not this one**, and
+     *   requests made with it count against its quota. If it is ever
+     *   rate-limited or withdrawn, the Spotify half stops working and nothing
+     *   here can fix that.
+     * - **It is a fallback, never an override.** A saved id always wins.
+     * - **It is not secret.** PKCE means there is no client secret, and a
+     *   client id travels in the authorise URL in plain sight.
+     *
+     * Kept in step with DEFAULT_CLIENT_ID in lib/spotify-pkce.js by hand;
+     * ContractTest fails if the two ever disagree, because a mismatch would
+     * mean the phone and the container sign in as two different applications.
+     */
+    const val DEFAULT_CLIENT_ID = "d420a117a32841c2b3474932e49fb54b"
+
     private const val VERIFIER_ALPHABET =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 

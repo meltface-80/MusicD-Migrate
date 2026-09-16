@@ -217,7 +217,7 @@ scratch on the next run.
 
 ## Install: Android
 
-**Download: [`dist/musicd-migrate-0.2.5.apk`](dist/musicd-migrate-0.2.5.apk)**
+**Download: [`dist/musicd-migrate-0.2.6.apk`](dist/musicd-migrate-0.2.6.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once.
 
@@ -269,7 +269,7 @@ Android refuses to install an unsigned APK, so CI will not publish one: the
 `apk` job builds and checks everything, warns, and skips only the publish until
 a key is available.
 
-**The key for this project already exists.** `dist/musicd-migrate-0.2.5.apk`
+**The key for this project already exists.** `dist/musicd-migrate-0.2.6.apk`
 is signed with it, and its fingerprint is pinned in
 `tools/release-key.sha256`. Every later build has to use the **same** key or
 Android will refuse to install it over the copy already on the phone — that is
@@ -542,40 +542,45 @@ over a real socket.
 
 ---
 
-## Appendix: the Client ID this install uses
+## Appendix: the Client ID this build signs in with
 
-Kept here because Spotify's registrations are frozen and re-finding one after a
-reinstall is a nuisance, not because it is a recommendation.
+This is **baked in**, because Spotify has frozen new registrations and a setup
+step nobody can complete is an unusable app. It is the owner's decision for the
+owner's own install, taken with all of the below understood.
 
 ```
 d420a117a32841c2b3474932e49fb54b
 ```
 
-Paste it into the **Spotify Client ID** field. What it is, plainly:
+`Pkce.DEFAULT_CLIENT_ID` in `android/core/…/Pkce.kt` and `DEFAULT_CLIENT_ID` in
+`lib/spotify-pkce.js`; `ContractTest` fails if those two, or this appendix, ever
+disagree — the id that starts a sign-in has to be the id that redeems the code,
+and Spotify's complaint when they differ is about the *code*, not about the id.
+
+What it is, plainly:
 
 * **It is not registered to MusicD Migrate.** It comes from the open-source
   Spotify world, which has long shared a well-known id among its users because
   Spotify will not issue new ones. It works here for exactly one reason: the
   loopback path `/login` is whitelisted on it, which is why this app's redirect
   path is `/login` and not `/api/spotify/callback`.
-* **The consent screen will name that application, not this one**, and your
+* **The consent screen will name that application, not this one**, and the
   requests count against its quota. If it is ever rate-limited or withdrawn,
   the Spotify half of this app stops working and there is nothing to be done
-  about it from here.
+  about it from here. That is the trade for being able to sign in at all.
+* **It is a fallback, never an override.** A saved id always wins: paste your
+  own into the **Spotify Client ID** field and this one is never used again.
+  Both halves resolve it the same way — saved, else built-in — through a single
+  function, because a fallback applied at three sites out of four is a sign-in
+  that begins as one application and ends as another.
 * **It is not a secret.** Sign-in uses PKCE, there is no client secret, and a
   client id travels in the query string of the authorise URL in plain sight
   every time anyone signs in to anything. Writing it down changes nothing about
   who can see it.
-* **Nothing in the code uses it.** The field is empty on a fresh install and
-  stays empty until somebody pastes something in — `store.get("spotify.clientId",
-  "")` in `index.js`, `store.setting("spotify.clientId").orEmpty()` in
-  `MigrateApi.kt`, no fallback on either side. That is deliberate and it stays
-  that way: a borrowed id is a choice the person installing this makes, not one
-  the app makes for them.
 
-If you do get a registration of your own, use that instead: add
-`http://127.0.0.1:3380/login` under **Redirect URIs** and paste your own id
-over this one.
+**If you fork this**, put your own id in those two constants, or clear them
+both to go back to asking the user — the page still has the field, the Save
+button and the instructions for registering one.
 
 ---
 

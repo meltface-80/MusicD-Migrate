@@ -1,6 +1,6 @@
 {
-  "version": "0.2.5",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.5.apk",
-  "sha256": "90a90221b79c0f7c8b52edf811af1d5957dd49304553140118fae0547d08503a",
-  "notes": "Fixes the Roon to Spotify crash: an OutOfMemoryError, reported by 0.2.4 rather than killing the app silently. Reading the target's saved albums held every page of raw JSON at once, and Spotify's /me/albums sends the full album object with about 180 country codes on the album and on every track — some 15KB apiece. 187MB for 1,500 albums in a test, against a 256MB heap on the phone, and the run died before matching anything. Both pagers in both clients now map each page as they go and drop the JSON, so a walk holds one page instead of a library."
+  "version": "0.2.6",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.6.apk",
+  "sha256": "9ab60441b046f4ba87ca3204af7fb2e089e92fcd06a84dbe59c3453ddaed16ca",
+  "notes": "The Spotify Client ID is baked in. Spotify has frozen new registrations, so asking for one nobody can obtain made the Spotify half unusable; the field now comes pre-filled and a sign-in works out of the box. It is a fallback, never an override — paste your own id in and that one wins. It is not registered to this app, so the consent screen names another application and the requests count against its quota; the README appendix and the page both say so."
 }

@@ -109,6 +109,35 @@ class ContractTest {
     }
 
     /**
+     * The baked-in Client ID is the same on both sides.
+     *
+     * A mismatch would mean the phone and the container sign in as two
+     * DIFFERENT applications, and the failure is not obvious from either end:
+     * the id that starts a sign-in has to be the id that redeems the code, and
+     * Spotify's complaint when they differ is about the code, not about the id.
+     * It also has to match the one written down in the README, which is where
+     * the owner goes looking when a sign-in stops working.
+     */
+    @Test fun `the baked-in Spotify Client ID matches the JavaScript one`() {
+        val root = repoRoot()
+        assumeTrue("not running from the repository", root != null)
+
+        val pkceJs = File(root, "lib/spotify-pkce.js").readText()
+        val js = Regex("const DEFAULT_CLIENT_ID = \"([^\"]*)\";")
+            .find(pkceJs)?.groupValues?.get(1)
+            ?: throw AssertionError("could not find DEFAULT_CLIENT_ID in lib/spotify-pkce.js")
+
+        assertEquals("lib/spotify-pkce.js and Pkce.kt must sign in as the same application",
+            js, Pkce.DEFAULT_CLIENT_ID)
+        assertTrue("a Spotify Client ID is 32 hex characters, not ${Pkce.DEFAULT_CLIENT_ID}",
+            Regex("^[0-9a-f]{32}$").matches(Pkce.DEFAULT_CLIENT_ID))
+
+        val readme = File(root, "README.md").readText()
+        assertTrue("the README appendix must quote the id the code actually uses",
+            readme.contains(Pkce.DEFAULT_CLIENT_ID))
+    }
+
+    /**
      * The edition-word list is the same on both sides.
      *
      * It is the single most behaviour-defining constant in the app: it decides
