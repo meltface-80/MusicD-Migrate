@@ -1,6 +1,6 @@
 {
-  "version": "0.2.7",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.7.apk",
-  "sha256": "9b5053636294810915074d1fbd511c818d4c198c69e53c2511250696a7734a51",
-  "notes": "Four matching bugs found in two real reports. A band whose own name holds the separator is no longer cut in half (AC/DC, Belle & Sebastian, Earth, Wind & Fire). One name written two ways now agrees with itself — \"Siouxsie and the Banshees\" against \"Siouxsie & The Banshees\" was 42 albums refused over a spelling. A leading \"The\" and a trailing \"Trio\"/\"Quartet\" are no longer different artists. And a trailing tag that only repeats the title's own words or the artist's name is ignored, so \"Always Let Me Go - Live In Tokyo (Live In Tokyo)\" matches while \"Rio (Live)\" is still correctly refused. About 450 albums across the two reports."
+  "version": "0.2.8",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.8.apk",
+  "sha256": "40863474183a69d9c1cb2038aa174aab9fdb074f6f41cf2714295849939c2923",
+  "notes": "The two decisions taken on the last report. An album whose title differs from yours by one trailing tag that says something — \"(Live)\", a venue, a date — is no longer refused outright: it goes to the album's own TRACK LISTING, which decides it. 634 of the 1,443 near-misses in two real reports are that shape. It needs 'check the track listing' turned ON; with it off nothing changed and a live tag never passes on a title alone. Five edition words added too — bonus edition, collector's edition, international version, U.S. version and the re-master spellings — while extended version, remixes, DJ mix, acoustic, Vol. 2 and EP were deliberately refused as different recordings."
 }

@@ -31,6 +31,32 @@ class CanonTest {
         assertEquals("Song", Canon.stripVersion("Song (feat. Someone) - 2011 Remaster"))
     }
 
+    @Test fun `the edition words added from a real library strip, their neighbours do not`() {
+        // Added on the owner's decision: each is the same performances in a
+        // different pressing, which is what "deluxe" already is.
+        assertEquals("Coming On Strong", Canon.stripVersion("Coming On Strong (Bonus Edition)"))
+        assertEquals("Bummed", Canon.stripVersion("Bummed (Collector's Edition)"))
+        assertEquals("Death to False Metal",
+            Canon.stripVersion("Death to False Metal (International Version)"))
+        assertEquals("Babylon", Canon.stripVersion("Babylon (U.S. Version)"))
+        assertEquals("Emotional Rescue", Canon.stripVersion("Emotional Rescue (2009 Re-Mastered)"))
+        assertEquals("Something", Canon.stripVersion("Something (Re-Mastered)"))
+
+        // Asked about and deliberately refused: different RECORDINGS, or a
+        // different record outright.
+        assertEquals("Pearls Of Passion (Extended Version)",
+            Canon.stripVersion("Pearls Of Passion (Extended Version)"))
+        assertEquals("Blue Lines (Remixes)", Canon.stripVersion("Blue Lines (Remixes)"))
+        assertEquals("At Play (DJ Mix)", Canon.stripVersion("At Play (DJ Mix)"))
+        assertEquals("Aftersun (EP)", Canon.stripVersion("Aftersun (EP)"))
+
+        // And the reason the remaster form is a pattern rather than a word in
+        // the list: the list is matched as a SUBSTRING, so "re master" in it
+        // would also strip a pre-master, a studio stage and not an edition.
+        assertEquals("Something (Pre-Master)", Canon.stripVersion("Something (Pre-Master)"))
+        assertEquals("Something (Pre-Mastered)", Canon.stripVersion("Something (Pre-Mastered)"))
+    }
+
     @Test fun `keeps suffixes that name a different recording`() {
         // The whole safety property: these are not editions.
         assertEquals("Paranoid Android (Live)", Canon.stripVersion("Paranoid Android (Live)"))

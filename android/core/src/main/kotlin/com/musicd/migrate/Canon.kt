@@ -60,12 +60,38 @@ object Canon {
         "special edition", "anniversary edition", "bonus track",
         "bonus track version", "explicit", "explicit version",
         "album version", "original mix", "mono", "stereo",
-        "digital remaster", "reissue", "re issue"
+        "digital remaster", "reissue", "re issue",
+        // Added on the owner's decision after two real reports, each one the
+        // same performances in a different pressing -- the same family as
+        // "deluxe", "expanded" and "anniversary edition" above:
+        //   "(Bonus Edition)"          Coming On Strong
+        //   "(Collector's Edition)"    Bummed
+        //   "(International Version)"  Death to False Metal
+        //   "(U.S. Version)"           Babylon   -- canon writes "u s version"
+        //   "(2009 Re-Mastered)"       Emotional Rescue  -- see REMASTER
+        // What was asked for and deliberately NOT added: "extended version",
+        // "(Remixes)", "(DJ Mix)", "(Acoustic)", "Vol. 2" and "(EP)". The
+        // first four are different RECORDINGS, "Vol. 2" is a different record
+        // outright, and an artist can have both an EP and an album of one
+        // name.
+        "bonus edition", "collectors edition", "international version",
+        "u s version"
     )
 
     // "(2011 Remaster)", "[Remastered]", " - 2011 Remaster", " - Deluxe Edition"
     private val SUFFIX = Regex("""\s*(?:[(\[][^)\]]*[)\]]|-\s+[^-]*)\s*$""")
     private val YEAR_EDITION = Regex("""^\d{4} (remaster|mix|version)$""")
+
+    /**
+     * "(Re-Mastered)", "(2009 Re-Mastered)", "(Remastering)" -- a remaster
+     * whose spelling the word list does not carry.
+     *
+     * ANCHORED, and that is the point: [EDITION_WORDS] is matched as a
+     * substring, so putting "re master" in the list would also strip
+     * "(Pre-Master)", which is a studio stage and not an edition. This form
+     * cannot.
+     */
+    private val REMASTER = Regex("""^(?:\d{4} )?re ?master(?:ed|ing)?$""")
 
     /**
      * The title with any trailing EDITION suffix removed.
@@ -84,6 +110,7 @@ object Canon {
             val inner = canon(m.value.trim(' ', '(', '[', '-', ')', ']'))
             if (inner.isEmpty()) return out
             val isEdition = EDITION_WORDS.any { inner == it || inner.contains(it) } ||
+                REMASTER.matches(inner) ||
                 YEAR_EDITION.matches(inner) ||
                 inner.startsWith("feat ") || inner.startsWith("featuring ") ||
                 inner.startsWith("with ")
