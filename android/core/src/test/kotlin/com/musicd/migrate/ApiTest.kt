@@ -181,6 +181,124 @@ class ApiTest {
         }
     }
 
+    /**
+     * A store with both services "signed in", so a migration can actually be
+     * started without a network. Every request is answered with `{}` by the
+     * FakeHttp, so the run reads empty libraries and finishes immediately —
+     * which is all this needs: the point is the START and the END, not the
+     * work in between.
+     */
+    private fun signedIn(): MemoryStore {
+        val store = MemoryStore()
+        store.putSetting("qobuz.session", JSONObject()
+            .put("token", "t").put("userId", "u").put("appId", "a")
+            .put("name", "Me").toString())
+        store.putSetting("spotify.session", JSONObject()
+            .put("accessToken", "at").put("refreshToken", "rt")
+            .put("expiresAt", System.currentTimeMillis() + 600_000)
+            .put("userId", "me").put("name", "Me").toString())
+        return store
+    }
+
+    @Test fun `the app is told when there is work to protect, and when there is not`() {
+        // Android 14 caps a dataSync foreground service at SIX HOURS in any
+        // 24, calls Service.onTimeout when the cap is reached, and kills the
+        // process if the service does not stop. v0.2.5 held one for the whole
+        // life of the app and died of exactly that on a real phone:
+        //
+        //   ForegroundServiceDidNotStopInTimeException: A foreground service
+        //   of type dataSync did not stop within its timeout
+        //
+        // So the app holds the service only while a run is in flight — and
+        // :core has to say when that is.
+        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
+        val store = signedIn()
+        val a = MigrateApi(store, FakeAssets(emptyMap()),
+            FakeHttp(listOf(FakeHttp.res(200, "{}"))), "0.1.0",
+            onBusyChanged = { seen.add(it) })
+
+        assertEquals("idle: nothing to protect, nothing reported", 0, seen.size)
+
+        val res = post(a, "/api/migrate", """{"direction":"qobuz-to-spotify","albums":true}""")
+        assertEquals(res.body.toString(Charsets.UTF_8), 200, res.status)
+        val jobId = JSONObject(res.body.toString(Charsets.UTF_8)).getString("jobId")
+
+        // The run is on its own thread; wait for the row to settle.
+        val until = System.currentTimeMillis() + 20_000
+        while (System.currentTimeMillis() < until &&
+               store.job(jobId)?.status == "running") Thread.sleep(50)
+
+        assertEquals("told exactly once at the start and once at the end: $seen",
+            listOf(true, false), seen.toList())
+    }
+
+    @Test fun `a second migration is refused while one is running, and the app is told once`() {
+        // The flag follows the RUN, not the request: a refused start must not
+        // report busy again, or the service would re-post its notification.
+        val store = signedIn()
+        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
+        // A slow Http keeps the first run alive long enough to race it.
+        val slow = object : Http {
+            override fun request(
+                method: String, url: String, headers: Map<String, String>,
+                body: ByteArray?, contentType: String?, timeoutMs: Int
+            ): HttpResponse {
+                Thread.sleep(300)
+                return HttpResponse(200, emptyMap(), "{}")
+            }
+        }
+        val a = MigrateApi(store, FakeAssets(emptyMap()), slow, "0.1.0",
+            onBusyChanged = { seen.add(it) })
+
+        assertEquals(200, post(a, "/api/migrate",
+            """{"direction":"qobuz-to-spotify","albums":true}""").status)
+        val again = post(a, "/api/migrate",
+            """{"direction":"qobuz-to-spotify","albums":true}""")
+        assertEquals("a second run is refused", 409, again.status)
+
+        val until = System.currentTimeMillis() + 20_000
+        while (System.currentTimeMillis() < until && seen.size < 2) Thread.sleep(50)
+        assertEquals("one start, one end — not two starts: $seen",
+            listOf(true, false), seen.toList())
+    }
+
+    @Test fun `the six-hour cap cancels the run rather than abandoning it`() {
+        // What the app calls from Service.onTimeout. The process is killed
+        // moments later if the service does not step down, so the run cannot
+        // continue — but a job row left at "running" about a process that no
+        // longer exists says nothing at all. It must end as CANCELLED.
+        val store = signedIn()
+        val slow = object : Http {
+            override fun request(
+                method: String, url: String, headers: Map<String, String>,
+                body: ByteArray?, contentType: String?, timeoutMs: Int
+            ): HttpResponse {
+                Thread.sleep(300)
+                return HttpResponse(200, emptyMap(), "{}")
+            }
+        }
+        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
+        val a = MigrateApi(store, FakeAssets(emptyMap()), slow, "0.1.0",
+            onBusyChanged = { seen.add(it) })
+
+        val res = post(a, "/api/migrate", """{"direction":"qobuz-to-spotify","albums":true}""")
+        assertEquals(200, res.status)
+        val jobId = JSONObject(res.body.toString(Charsets.UTF_8)).getString("jobId")
+
+        a.cancelCurrentJob()
+
+        val until = System.currentTimeMillis() + 20_000
+        while (System.currentTimeMillis() < until &&
+               store.job(jobId)?.status == "running") Thread.sleep(50)
+        assertEquals("the row says what happened", "cancelled", store.job(jobId)?.status)
+        assertEquals("and the app is told the work is over: $seen",
+            listOf(true, false), seen.toList())
+
+        // And with nothing running it is a no-op rather than a throw: the
+        // cap can be reached while the app sits idle.
+        a.cancelCurrentJob()
+    }
+
     @Test fun `a run that dies of an ERROR is recorded, not left to kill the app`() {
         // catch (e: Exception) does not catch an Error. An OutOfMemoryError
         // sails through it, kills the worker thread, and Android's default

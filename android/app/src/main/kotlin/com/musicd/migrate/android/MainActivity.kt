@@ -172,6 +172,10 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             null
         }
+        // When our handler wrote it, so the report can say whether the stack
+        // below belongs to the death Android is describing. See the note where
+        // the two are joined.
+        val oursAt = if (ours != null) pending.lastModified() else 0L
         if (ours != null) runCatching { pending.delete() }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -232,8 +236,25 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 null
             }
-            // Ours has the stack; Android's often does not.
-            append(ours ?: trace ?: "Android kept no stack trace for this one.")
+            // TWO RECORDS OF DIFFERENT CRASHES MUST NOT READ AS ONE.
+            // Ours has the stack and Android's often does not, so ours wins —
+            // but a pending trace survives until the next launch, and if the
+            // app died AGAIN before that launch the two are hours apart and
+            // splicing them silently files a stack trace under the wrong
+            // death. A real report from a phone had exactly that: 13:38:43
+            // above a header saying 16:38:45. So they are joined only when
+            // they are the same event, and labelled when they are not.
+            val sameEvent = ours != null && kotlin.math.abs(last.timestamp - oursAt) < 60_000L
+            if (ours != null && !sameEvent) {
+                append("Android kept no stack trace for the death above")
+                if (trace != null) append(", only this:\n\n").append(trace)
+                else append(".")
+                append("\n\nAn EARLIER crash, at ").append(java.util.Date(oursAt))
+                    .append(", left this one — it is not the same death:\n\n")
+                    .append(ours)
+            } else {
+                append(ours ?: trace ?: "Android kept no stack trace for this one.")
+            }
         }
         saveCrashReport(name, text)
     }

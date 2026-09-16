@@ -52,6 +52,16 @@ object Match {
          */
         val shortlist: List<Album> = emptyList(),
         /**
+         * The title tier refused, but a candidate differs only by a trailing
+         * tag — and the TRACK LISTING may still decide it.
+         *
+         * Never a match by itself. [shortlist] carries the candidates and the
+         * engine only puts them to the listing when the user has that check
+         * on, so with it off this flag changes nothing. Kept in step with
+         * `needsListing` in lib/match.js by hand.
+         */
+        val needsListing: Boolean = false,
+        /**
          * The refusal came from a READ that failed, not from evidence.
          *
          * "We looked and it is not there" is an answer and is cached. "We
@@ -240,6 +250,38 @@ object Match {
     private val TAG_EDGES = Regex("""^[\s(\[\-:]+|[)\]\s]+$""")
 
     /**
+     * The tag one title has and the other does not, or "" if that is not the
+     * only difference between them.
+     *
+     * The counterpart of [redundantTag]: this one finds the tags that DO say
+     * something. "Rio" against "Rio (Live)" returns "(Live)"; "Greatest Hits"
+     * against "Greatest Hits: Volume 2" returns ": Volume 2".
+     *
+     * A match on this alone would be a title-and-artist match, which this
+     * file refuses on principle: "Greatest Hits" by almost anybody is several
+     * records. So the caller holds these back for the TRACK LISTING to
+     * decide, which is the one piece of independent evidence a barcode-less
+     * album has.
+     *
+     * Kept in step with addedTag in lib/match.js by hand.
+     */
+    private fun addedTag(candTitle: String?, wantTitle: String?): String {
+        for ((long, short) in listOf(candTitle to wantTitle, wantTitle to candTitle)) {
+            val raw = long ?: ""
+            for (tail in tails(raw)) {
+                val head = Canon.canon(raw.substring(0, raw.length - tail.length))
+                if (head.isEmpty()) continue
+                if (head == Canon.canon(short ?: "") ||
+                    head == Canon.canon(Canon.stripVersion(short ?: ""))) {
+                    val inner = Canon.canon(TAG_EDGES.replace(tail, ""))
+                    if (inner.isNotEmpty()) return tail.trim()
+                }
+            }
+        }
+        return ""
+    }
+
+    /**
      * A trailing tag that adds NOTHING the other side's title and artist did
      * not already say -- the tag text if so, "" if not.
      *
@@ -318,6 +360,11 @@ object Match {
         // objection "but I own it, it is definitely on there" -- and the
         // answer is usually visible in what DID come back: the same record
         // under a longer title, or a different act with the same album name.
+        // Candidates the title tier will not pass on its own, held for the
+        // track listing to decide. See addedTag.
+        data class ByListing(val c: Album, val sim: Double)
+        val byListing = ArrayList<ByListing>()
+
         var nearestByArtist: Album? = null
         var nearestByArtistSim = -1.0
         var nearest: Album? = null
@@ -341,7 +388,18 @@ object Match {
             val tag = if (exact || close) ""
                 else redundantTag(c.title, want.title, want.artists)
                     .ifEmpty { redundantTag(want.title, c.title, want.artists) }
-            if (!exact && !close && tag.isEmpty()) continue
+
+            // A title that differs by a tag which DOES say something --
+            // "(Live)" on a title that never mentions live, a venue and a
+            // date. Never a match on its own: it goes on a separate list
+            // that only the TRACK LISTING can promote, so with corroboration
+            // off this changes nothing at all. See needsListing on Result.
+            if (!exact && !close && tag.isEmpty()) {
+                if (addedTag(c.title, want.title).isNotEmpty()) {
+                    byListing.add(ByListing(c, sim))
+                }
+                continue
+            }
 
             // A stripped-title match whose track count disagrees is the
             // standard edition being offered for the deluxe, or the reverse.
@@ -356,6 +414,22 @@ object Match {
         }
 
         if (scored.isEmpty()) {
+            // Nothing decisive on the title, but something whose only
+            // difference is a trailing tag. The refusal is UNCHANGED -- this
+            // is still not a match -- and the shortlist rides along so the
+            // engine can put the track listing to it when the user has that
+            // check on. matchAlbum never promotes these itself: a title and
+            // an artist are not decisive evidence, which is the rule this
+            // whole file exists to hold.
+            if (byListing.isNotEmpty()) {
+                val ordered = byListing.sortedWith(
+                    compareByDescending<ByListing> { it.sim }.thenBy { it.c.id })
+                return Result(
+                    reason = "the closest that artist has is \"${ordered.first().c.title}\", " +
+                        "which is not the same record as \"${want.title}\"",
+                    needsListing = true,
+                    shortlist = ordered.map { it.c })
+            }
             // Three different refusals on purpose, because they ask for three
             // different things from the user: fix the tag, accept a different
             // edition, or accept that it is not there.

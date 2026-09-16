@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 218 tests
+npm test                                                  # 222 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 207 tests
+cd android && ./gradlew :core:test                         # 214 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -56,7 +56,17 @@ Concretely, and do not relax any of these without a very good argument:
 - **There is no "best guess" tier.** For a TRACK: ISRC; or
   title+artist+duration; or title-without-edition-suffix+artist+tighter-
   duration. Below that, nothing. For an ALBUM: barcode; or
-  title+artist+**track listing**. Below that, nothing.
+  title+artist+**track listing**; or — on the owner's decision, after two real
+  reports — **a title differing only by a trailing tag, artist agreeing, AND
+  the track listing agreeing** (`needsListing`). That last one is not a
+  loosening of the tiers, it is the listing tier reached from further away:
+  `matchAlbum` still REFUSES those candidates itself and only puts them on
+  `shortlist`, so with the track-listing check off nothing changes and
+  "(Live)" never passes on a title. What keeps it honest is that a live
+  release usually tags its TRACKS live too, and "one live" is not "one", so
+  the coverage test fails exactly where it should. The row says
+  `method=tracklist` rather than claiming the title agreed. Below that,
+  nothing.
 - **Title and artist alone are not an album match.** They are not decisive:
   "Greatest Hits" by almost anybody is several different records, a live album
   and a studio album share a name often enough, and a covers band files under
@@ -76,6 +86,18 @@ Concretely, and do not relax any of these without a very good argument:
   `(Radio Edit)`, `(Someone Remix)`, `- Extended Mix`, `(Demo)` are not, and
   must never be added to `EDITION_WORDS`. `ContractTest` checks the two lists
   agree; nothing checks that a wrong word was not added to *both*.
+  Five were added on the owner's decision from real reports — "bonus
+  edition", "collectors edition", "international version", "u s version" (that
+  is what `canon` makes of "U.S. Version") and the anchored `REMASTER`
+  pattern — all of them one pressing of the same performances, the family
+  "deluxe" and "anniversary edition" already belong to. Asked for and REFUSED
+  in the same breath: "extended version", "(Remixes)", "(DJ Mix)",
+  "(Acoustic)", "Vol. 2", "(EP)".
+  **The list is matched as a SUBSTRING**, which is why the remaster spelling
+  is a pattern and not a word: "re master" in the list also strips
+  "(Pre-Master)", a studio stage and not an edition. Both suites pin that.
+  Adding a word here is the highest-risk edit in the repository and the one
+  nothing else can catch — a wrong word in BOTH lists is silent.
 - **No duration means no title-tier match.** Title and artist alone are exactly
   the two facts a cover, a re-recording and a live take also satisfy.
 - **A missing ISRC is missing data, not evidence.** It falls through to the
@@ -283,6 +305,18 @@ directory as-is.
   deliberately NOT ensemble words**, because a tribute act is somebody else
   and that is the mistake this module exists to prevent. `MatchTest` and
   `CanonTest` both pin "Portishead" ≠ "Portishead Tribute"; keep them.
+- **A tag that SAYS something gets one chance, and only from the listing.**
+  `addedTag` is the counterpart of `redundantTag`: it finds the candidates
+  whose title differs from the owner's by exactly one trailing tag that adds a
+  fact — "(Live)" on a title that never mentions live, a venue, a date,
+  "(Legacy Edition)". 634 of the 1,443 near-misses in two real reports were
+  that shape. They go on `shortlist` with `needsListing` set and **`album`
+  still null**: the engine corroborates them only when the user has the
+  track-listing check on, and if the listing disagrees the ORIGINAL title
+  refusal is kept, because "the closest that artist has is X" says more than a
+  coverage number when the title differed too. Never promote one of these
+  inside `matchAlbum`: that would be a title-and-artist album match, which is
+  the one thing this file exists to refuse.
 - **A tag that repeats what the title already says is not a difference.**
   `redundantTag` in both halves: a trailing "(…)", " - …" or ": …" is ignored
   when every word in it already appears in the other side's title or in the
@@ -403,6 +437,29 @@ directory as-is.
   logcat, so without this "it crashed" is the entire bug report. Only an
   abnormal end is reported (a swipe-away is not a fault), and the timestamp
   already reported is remembered so one crash is reported once.
+  **And two records of different deaths must not read as one**: our saved
+  trace survives until the next launch, so if the app died again before then,
+  Android's header and our stack are hours apart — a real report from a phone
+  had 13:38:43 underneath a header saying 16:38:45. They are joined only when
+  the timestamps agree, and labelled as separate when they do not.
+- **A `dataSync` foreground service gets SIX HOURS in any 24, and then the
+  system kills the process.** Android 14 caps it; at the cap it calls
+  `Service.onTimeout` and throws
+  `ForegroundServiceDidNotStopInTimeException` moments later if the service
+  has not stepped down. v0.2.5 went foreground in `onStartCommand` and stayed
+  there for the whole life of the app, so the cap was *certain* to be reached
+  — and it was, on a real phone, in the middle of nothing at all. A migration
+  takes minutes, not hours, so the service is now in the foreground only
+  while a run is in flight: `:core` cannot touch a `Service`, so `MigrateApi`
+  reports busy transitions through `onBusyChanged` (edge-triggered — calling
+  `startForeground` on every poll re-posts the notification) and
+  `MigrateService` decides what that means. Both `onTimeout` overloads are
+  implemented (one argument in API 34, two in API 35) and both call
+  `cancelCurrentJob()`, so the job row ends as **cancelled** instead of
+  sitting at "running" about a process that no longer exists. Start the
+  service with `startService`, never `startForegroundService`: the latter
+  demands a `startForeground` within five seconds and there is nothing to
+  protect yet.
 - **A Qobuz `user_auth_token` belongs to the app that minted it.** The `app_id`
   and the token move together; presenting a mismatched pair is a 401 that reads
   exactly like an expired sign-in.

@@ -654,7 +654,14 @@ class Migration(
 
         // A barcode match is decisive and is never second-guessed. A title
         // match without one is not, so it has to be corroborated or given up.
-        if (r.matched && corroborating) r = corroborate(r, wantTitles)
+        //
+        // `needsListing` is the other way round: matchAlbum found something
+        // whose only difference is a trailing tag that says something --
+        // "(Live)", a venue, "(Legacy Edition)" -- and refused it, because a
+        // title and an artist are not decisive. Those never match on their
+        // own; the listing is the only thing that can promote them, so they
+        // are only put to it when the user has that check on.
+        if ((r.matched || r.needsListing) && corroborating) r = corroborate(r, wantTitles)
 
         val id = r.album?.id
 
@@ -692,10 +699,25 @@ class Migration(
                 // and disarms the circuit breaker for good. See
                 // noteUnreadable.
                 corroborated.incrementAndGet()
-                return Match.Result(album = cand, method = (r.method ?: "") + "+tracklist",
-                    score = r.score, reason = check.reason)
+                return Match.Result(album = cand,
+                    // A candidate the title tier refused is promoted by the
+                    // listing alone, and the method says so rather than
+                    // pretending the title agreed.
+                    method = if (r.method == null) "tracklist" else r.method + "+tracklist",
+                    score = r.score,
+                    reason = if (r.needsListing)
+                        "the title differs \u2014 theirs is \"${cand.title}\" \u2014 but " +
+                        check.reason.removePrefix("matched on title, artist and ") +
+                        " agree, which is the evidence that decides it"
+                    else check.reason)
             }
             if (closest == null || check.coverage > closest.coverage) closest = check
+        }
+        // A candidate that only ever had a tag against it keeps the refusal
+        // matchAlbum wrote: "the closest that artist has is X" says more than
+        // "its track listing does not agree", because the title differed too.
+        if (r.needsListing) {
+            return Match.Result(unreadable = closest?.unreadable ?: false, reason = r.reason)
         }
         return Match.Result(
             // A check that could not be MADE is not the same as a record that

@@ -20,6 +20,33 @@ test("stripVersion removes edition suffixes", () => {
   assert.strictEqual(stripVersion("Song (feat. Someone) - 2011 Remaster"), "Song");
 });
 
+test("the edition words added from a real library strip, and their neighbours do not", () => {
+  // Added on the owner's decision: each is the same performances in a
+  // different pressing, which is what "deluxe" and "anniversary edition"
+  // already are.
+  assert.strictEqual(stripVersion("Coming On Strong (Bonus Edition)"), "Coming On Strong");
+  assert.strictEqual(stripVersion("Bummed (Collector's Edition)"), "Bummed");
+  assert.strictEqual(stripVersion("Death to False Metal (International Version)"),
+    "Death to False Metal");
+  assert.strictEqual(stripVersion("Babylon (U.S. Version)"), "Babylon");
+  assert.strictEqual(stripVersion("Emotional Rescue (2009 Re-Mastered)"), "Emotional Rescue");
+  assert.strictEqual(stripVersion("Something (Re-Mastered)"), "Something");
+
+  // Asked about and deliberately refused: different RECORDINGS, or a
+  // different record outright.
+  assert.strictEqual(stripVersion("Pearls Of Passion (Extended Version)"),
+    "Pearls Of Passion (Extended Version)");
+  assert.strictEqual(stripVersion("Blue Lines (Remixes)"), "Blue Lines (Remixes)");
+  assert.strictEqual(stripVersion("At Play (DJ Mix)"), "At Play (DJ Mix)");
+  assert.strictEqual(stripVersion("Aftersun (EP)"), "Aftersun (EP)");
+
+  // And the reason the remaster form is a pattern rather than a word in the
+  // list: the list is matched as a SUBSTRING, so "re master" in it would
+  // also strip a pre-master, which is a studio stage and not an edition.
+  assert.strictEqual(stripVersion("Something (Pre-Master)"), "Something (Pre-Master)");
+  assert.strictEqual(stripVersion("Something (Pre-Mastered)"), "Something (Pre-Mastered)");
+});
+
 test("stripVersion KEEPS suffixes that name a different recording", () => {
   // The whole safety property of the module: these are not editions.
   assert.strictEqual(stripVersion("Paranoid Android (Live)"), "Paranoid Android (Live)");

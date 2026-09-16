@@ -27,6 +27,24 @@ import com.musicd.migrate.http.HttpServer
  * The HTTP server and the API live here rather than in the activity for the
  * same reason: the WebView reconnects to a server that never went away when
  * the app comes back to the foreground.
+ *
+ * WHY IT IS ONLY IN THE FOREGROUND WHILE A RUN IS IN FLIGHT. Android 14 caps
+ * a `dataSync` foreground service at SIX HOURS in any 24 hours. When the cap
+ * is reached the system calls [onTimeout], and if the service has not stopped
+ * moments later it throws and KILLS THE PROCESS. v0.2.5 held the service for
+ * the whole life of the app, so the cap was certain to be reached, and it
+ * died of exactly that on a real phone:
+ *
+ *     android.app.RemoteServiceException$ForegroundServiceDidNotStopInTime
+ *     Exception: A foreground service of type dataSync did not stop within
+ *     its timeout
+ *
+ * A migration takes minutes. Holding the service for those minutes and not
+ * for the hours in between keeps the app inside a budget it cannot exhaust,
+ * and the notification now appears while something is actually being
+ * written — which is what the notification is for. While idle this is an
+ * ordinary started service: if Android reclaims the process, the next launch
+ * starts it again and the page reconnects.
  */
 class MigrateService : Service() {
 
@@ -44,13 +62,18 @@ class MigrateService : Service() {
         /** The running server's address, or null before it has started. */
         fun rootUrl(): String? = instance?.server?.rootUrl
 
+        /**
+         * Start the server.
+         *
+         * `startService`, NOT `startForegroundService`: the latter demands a
+         * `startForeground` call within five seconds or it throws
+         * ForegroundServiceDidNotStartInTimeException, and there is nothing to
+         * be in the foreground FOR until a run begins. Called from
+         * MainActivity.onCreate, so the app is visible and a background-start
+         * restriction cannot apply.
+         */
         fun start(context: Context) {
-            val intent = Intent(context, MigrateService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startService(Intent(context, MigrateService::class.java))
         }
     }
 
@@ -67,7 +90,10 @@ class MigrateService : Service() {
         val a = MigrateApi(s, AndroidAssets(applicationContext),
             version = BuildConfig.VERSION_NAME,
             roonDiscovery = com.musicd.migrate.roon.SoodDiscovery(
-                multicastLock = WifiMulticastLock(applicationContext)))
+                multicastLock = WifiMulticastLock(applicationContext)),
+            // :core cannot touch a Service, so it reports when there is a run
+            // to protect and this decides what that means.
+            onBusyChanged = { busy -> onBusy(busy) })
         api = a
 
         // Loopback only, and there is deliberately no switch to widen it:
@@ -80,7 +106,10 @@ class MigrateService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, notification())
+        // Deliberately NOT startForeground: see the note on the class. The
+        // service goes to the foreground when a run starts and leaves it when
+        // the run ends.
+        //
         // START_STICKY: if Android kills the process under memory pressure,
         // bring it back. A migration in flight is NOT resumed — the job is
         // marked interrupted on the next start and is re-runnable by design,
@@ -89,7 +118,67 @@ class MigrateService : Service() {
         return START_STICKY
     }
 
+    /** Whether startForeground has been called and not yet undone. */
+    @Volatile private var foreground = false
+
+    private fun onBusy(busy: Boolean) {
+        // Called from whichever thread started or finished the work, and
+        // Service calls want the main looper.
+        //
+        // runCatching, with a reason: on API 31+ startForeground throws
+        // ForegroundServiceStartNotAllowedException if the app is in the
+        // background when it is called. A run only ever starts from a tap on
+        // the page, so the app IS visible — but if that ever stops being true
+        // the run should carry on unprotected rather than take the process
+        // down, which is the failure this whole arrangement exists to avoid.
+        android.os.Handler(mainLooper).post {
+            runCatching { if (busy) goForeground() else leaveForeground() }
+        }
+    }
+
+    private fun goForeground() {
+        if (foreground) return
+        startForeground(NOTIFICATION_ID, notification())
+        foreground = true
+    }
+
+    private fun leaveForeground() {
+        if (!foreground) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        foreground = false
+    }
+
+    /**
+     * Android says the foreground service has had its six hours.
+     *
+     * Both signatures: the one-argument form arrived with the cap in API 34
+     * and the two-argument one in API 35. Either way the contract is the same
+     * and it is short — stop being a foreground service NOW, or the system
+     * throws ForegroundServiceDidNotStopInTimeException and kills the
+     * process, which is the crash this whole arrangement exists to prevent.
+     *
+     * A run in flight is cancelled rather than abandoned silently: `cancel`
+     * marks the job cancelled, so the report says what happened instead of
+     * the row sitting at "running" for ever. Reaching this at all takes six
+     * hours of migrating in one day, which no library here comes close to.
+     */
+    override fun onTimeout(startId: Int) {
+        api?.cancelCurrentJob()
+        leaveForeground()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        api?.cancelCurrentJob()
+        leaveForeground()
+    }
+
     override fun onDestroy() {
+        leaveForeground()
         api?.shutdown()
         server?.stop()
         store?.close()

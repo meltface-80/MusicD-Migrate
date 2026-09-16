@@ -808,6 +808,67 @@ test("one album corroborating disarms that for good", async () => {
     "so the run only finished because one success disarmed the breaker");
 });
 
+test("a live tag is accepted only when the track listing agrees", async () => {
+  // The owner's decision, and the reason it is safe: "Rio" against "Rio
+  // (Live)" is a title-and-artist match, which this app refuses on
+  // principle — so the album's own TRACK LISTING has to carry it, exactly as
+  // it does for any other barcode-less album.
+  const mine = ["One", "Two", "Three", "Four"].map((t) => ({ title: t }));
+  const source = new FakeService("q", { lib: { albums: [Object.assign(
+    album({ id: "qal", title: "Rio", upc: "", trackCount: null }), { tracks: mine })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Rio (Live)", artists: ["Metallica"],
+    upc: "", tracks: mine }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 1, items[0] && items[0].note);
+  assert.match(items[0].note, /the title differs — theirs is "Rio \(Live\)"/);
+  assert.match(items[0].note, /which is the evidence that decides it/);
+  assert.strictEqual(items[0].method, "tracklist",
+    "the listing carried it, and the method says so rather than claiming the title did");
+});
+
+test("a live tag is refused when the listing disagrees, with the title reason kept", async () => {
+  // A live record's tracks are usually tagged "(Live)" too, and a canonical
+  // "so what live" is not "so what" — which is what stops a live album
+  // passing as the studio one.
+  const source = new FakeService("q", { lib: { albums: [Object.assign(
+    album({ id: "qal", title: "Rio", upc: "", trackCount: null }),
+    { tracks: ["One", "Two", "Three", "Four"].map((t) => ({ title: t })) })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Rio (Live)", artists: ["Metallica"],
+    upc: "", tracks: ["One (Live)", "Two (Live)", "Three (Live)", "Nine"]
+      .map((t) => ({ title: t })) }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.matched, 0);
+  assert.match(items[0].note, /the closest that artist has is "Rio \(Live\)"/,
+    "the title refusal is kept: it says more than a coverage number");
+});
+
+test("with the listing check off, a live tag is refused and costs no reads", async () => {
+  // The other half of the owner's decision: this tier does NOTHING unless the
+  // track listing is being read. Nobody gets a live album on a title match.
+  const mine = ["One", "Two", "Three", "Four"].map((t) => ({ title: t }));
+  const source = new FakeService("q", { lib: { albums: [Object.assign(
+    album({ id: "qal", title: "Rio", upc: "", trackCount: null }), { tracks: mine })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sal", title: "Rio (Live)", artists: ["Metallica"],
+    upc: "", tracks: mine }];
+
+  const { result, items } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 0);
+  assert.strictEqual(result.counts.unmatched, 1);
+  assert.match(items[0].note, /the closest that artist has is "Rio \(Live\)"/);
+  assert.strictEqual(target.albumTrackCalls, undefined, "and nothing was read");
+});
+
 test("a barcode match is never second-guessed by a track listing", async () => {
   // A barcode is decisive. Re-checking it against a listing could only turn a
   // right answer into a wrong refusal, and would cost a read per album.

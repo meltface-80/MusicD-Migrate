@@ -154,7 +154,12 @@ class ContractTest {
         val jsList = Regex("""const EDITION_WORDS = \[(.*?)];""", RegexOption.DOT_MATCHES_ALL)
             .find(canonJs)?.groupValues?.get(1)
             ?: throw AssertionError("could not find EDITION_WORDS in lib/canon.js")
-        val jsWords = Regex(""""([^"]+)"""").findAll(jsList)
+        // Line comments first. The list carries a comment naming the titles
+        // each word was added for -- "(Bonus Edition)", "Vol. 2" -- and
+        // reading the quoted strings out of THOSE makes the two lists
+        // disagree over words neither of them holds.
+        val jsCode = jsList.lines().joinToString("\n") { it.substringBefore("//") }
+        val jsWords = Regex(""""([^"]+)"""").findAll(jsCode)
             .map { it.groupValues[1] }.toSortedSet()
 
         assertEquals("lib/canon.js and Canon.kt must agree on what an edition suffix is",

@@ -684,6 +684,66 @@ class MigrationTest {
             (r.counts["failed"] ?: 0) > Migration.UNREADABLE_LIMIT)
     }
 
+    @Test fun `a live tag is accepted only when the track listing agrees`() {
+        // The owner's decision, and the reason it is safe: "Rio" against "Rio
+        // (Live)" is a title-and-artist match, which this app refuses on
+        // principle -- so the album's own TRACK LISTING has to carry it,
+        // exactly as it does for any other barcode-less album.
+        val mine = listing("One", "Two", "Three", "Four")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(id = "qal", title = "Rio", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = mine
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Rio (Live)", listOf("Metallica"), null)))
+        target.albumTrackListings["sal"] = mine
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(r.items.firstOrNull()?.note, 1, r.counts["matched"])
+        val note = r.items[0].note.orEmpty()
+        assertTrue(note, note.contains("the title differs"))
+        assertTrue(note, note.contains("\"Rio (Live)\""))
+        assertTrue(note, note.contains("which is the evidence that decides it"))
+        assertEquals("the listing carried it, and the method says so",
+            "tracklist", r.items[0].method)
+    }
+
+    @Test fun `a live tag is refused when the listing disagrees, keeping the title reason`() {
+        // A live record's tracks are usually tagged "(Live)" too, and a
+        // canonical "one live" is not "one" -- which is what stops a live
+        // album passing as the studio one.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(id = "qal", title = "Rio", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = listing("One", "Two", "Three", "Four")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Rio (Live)", listOf("Metallica"), null)))
+        target.albumTrackListings["sal"] =
+            listing("One (Live)", "Two (Live)", "Three (Live)", "Nine")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertNull(r.counts["matched"])
+        assertTrue(r.items[0].note.orEmpty(),
+            r.items[0].note.orEmpty().contains("the closest that artist has is \"Rio (Live)\""))
+    }
+
+    @Test fun `with the listing check off a live tag is refused and costs no reads`() {
+        // The other half of the owner's decision: this tier does NOTHING
+        // unless the track listing is being read.
+        val mine = listing("One", "Two", "Three", "Four")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            alb(id = "qal", title = "Rio", upc = "", trackCount = null)))
+        source.albumTrackListings["qal"] = mine
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Rio (Live)", listOf("Metallica"), null)))
+        target.albumTrackListings["sal"] = mine
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, corroborate = false))
+        assertNull(r.counts["matched"])
+        assertEquals(1, r.counts["unmatched"])
+        assertTrue(r.items[0].note.orEmpty(),
+            r.items[0].note.orEmpty().contains("the closest that artist has is \"Rio (Live)\""))
+        assertEquals("and nothing was read", 0, target.albumTrackCalls.get())
+    }
+
     @Test fun `a barcode match is never second-guessed by a track listing`() {
         val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "0075596040129")))
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(
