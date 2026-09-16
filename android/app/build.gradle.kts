@@ -15,8 +15,8 @@ android {
         targetSdk = 36
         // versionCode must rise with versionName or Android refuses to install
         // over the previous build. The workflow publishes dist/ from these.
-        versionCode = 13
-        versionName = "0.2.8"
+        versionCode = 14
+        versionName = "0.2.9"
     }
 
     sourceSets["main"].java.srcDirs("src/main/kotlin")

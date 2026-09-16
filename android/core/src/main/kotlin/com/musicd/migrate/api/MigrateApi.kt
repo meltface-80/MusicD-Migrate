@@ -48,7 +48,28 @@ class MigrateApi(
      * on a network that has one. The app module supplies a discovery that
      * takes the lock; :core cannot, because it must not depend on the SDK.
      */
-    private val roonDiscovery: RoonDiscovery = SoodDiscovery()
+    private val roonDiscovery: RoonDiscovery = SoodDiscovery(),
+    /**
+     * Told whenever there starts or stops being long work to protect.
+     *
+     * The app module holds a foreground service only while this is true, and
+     * that is not a nicety: Android 14 caps a `dataSync` foreground service at
+     * SIX HOURS in any 24, calls `Service.onTimeout` when the cap is reached,
+     * and kills the process if the service does not stop. v0.2.5 held one for
+     * the whole life of the app and was killed on a real phone with
+     *
+     *     ForegroundServiceDidNotStopInTimeException: A foreground service of
+     *     type dataSync did not stop within its timeout
+     *
+     * A migration takes minutes and a scan takes minutes. Holding the service
+     * for those, and not for the hours in between, keeps the app inside a
+     * budget it cannot exhaust — and the notification then appears while
+     * something is actually being written, which is what it is for.
+     *
+     * `:core` cannot touch a Service, so it reports the fact and the app
+     * module decides what to do with it.
+     */
+    private val onBusyChanged: (Boolean) -> Unit = {}
 ) {
     /** The live migration, or null. */
     @Volatile private var current: Migration? = null
@@ -403,6 +424,23 @@ class MigrateApi(
     @Volatile private var roonCancelScan = false
     @Volatile private var roonProgress: IntArray? = null
 
+    /**
+     * Whether a migration or a Roon scan is running, as last reported.
+     *
+     * Kept so the callback fires on CHANGES only: a service that calls
+     * startForeground on every poll would re-post the notification each time.
+     */
+    @Volatile private var busy = false
+
+    /** Re-read the two flags and tell the app module if that changed. */
+    private fun refreshBusy() {
+        val now = currentJobId != null || roonScanning
+        if (now == busy) return
+        busy = now
+        // A listener that throws must not take the run down with it.
+        runCatching { onBusyChanged(now) }
+    }
+
     private fun roonCore(): RoonCore {
         roon?.let { return it }
         synchronized(this) {
@@ -505,6 +543,7 @@ class MigrateApi(
         roonScanning = true
         roonCancelScan = false
         roonProgress = intArrayOf(0, 0, 0, 0)
+        refreshBusy()
         Thread({
             try {
                 roonClient(core).scan(
@@ -520,6 +559,7 @@ class MigrateApi(
             } finally {
                 roonScanning = false
                 roonProgress = null
+                refreshBusy()
             }
         }, "roon-scan").apply { isDaemon = true }.start()
         return ok()
@@ -699,6 +739,7 @@ class MigrateApi(
         val migration = Migration(source, target, store, jobId, options)
         current = migration
         currentJobId = jobId
+        refreshBusy()
 
         // Deliberately not run inline: a migration takes minutes and the
         // WebView is not going to hold a request open for it. The job id comes
@@ -711,6 +752,7 @@ class MigrateApi(
                 // immediately by a new migration would otherwise have the old
                 // one clear the new.
                 if (current === migration) { current = null; currentJobId = null }
+                refreshBusy()
             }
         }
 
@@ -817,6 +859,29 @@ class MigrateApi(
         val bytes = assets.read("web/$rel") ?: return Response.notFound()
         return Response.bytes(200, mimeFor(rel), bytes,
             mapOf("Cache-Control" to "no-cache"))
+    }
+
+    /**
+     * Stop whatever is running, because the platform is about to stop us.
+     *
+     * Called from the app module when Android says the foreground service has
+     * had its six hours ([android.app.Service.onTimeout]). The work cannot
+     * carry on — the process is killed moments later if the service does not
+     * step down, and once it has stepped down a long run would be killed
+     * under memory pressure anyway.
+     *
+     * So both halves are cancelled: a migration through the same `cancel()`
+     * that `/api/job/:id/cancel` uses, so `runJob` records the job as
+     * **cancelled** rather than leaving the row at "running" for ever, and a
+     * Roon scan through the same flag as `/api/roon/scan/cancel`. A run that
+     * stopped for a reason the user can read is the whole point; a row that
+     * says "running" about a process that no longer exists is not.
+     *
+     * Safe to call with nothing running: it does nothing.
+     */
+    fun cancelCurrentJob() {
+        current?.cancel()
+        if (roonScanning) roonCancelScan = true
     }
 
     fun shutdown() {

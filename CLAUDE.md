@@ -18,7 +18,7 @@ Spotify account.
 npm test                                                  # 222 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 211 tests
+cd android && ./gradlew :core:test                         # 214 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -437,6 +437,29 @@ directory as-is.
   logcat, so without this "it crashed" is the entire bug report. Only an
   abnormal end is reported (a swipe-away is not a fault), and the timestamp
   already reported is remembered so one crash is reported once.
+  **And two records of different deaths must not read as one**: our saved
+  trace survives until the next launch, so if the app died again before then,
+  Android's header and our stack are hours apart — a real report from a phone
+  had 13:38:43 underneath a header saying 16:38:45. They are joined only when
+  the timestamps agree, and labelled as separate when they do not.
+- **A `dataSync` foreground service gets SIX HOURS in any 24, and then the
+  system kills the process.** Android 14 caps it; at the cap it calls
+  `Service.onTimeout` and throws
+  `ForegroundServiceDidNotStopInTimeException` moments later if the service
+  has not stepped down. v0.2.5 went foreground in `onStartCommand` and stayed
+  there for the whole life of the app, so the cap was *certain* to be reached
+  — and it was, on a real phone, in the middle of nothing at all. A migration
+  takes minutes, not hours, so the service is now in the foreground only
+  while a run is in flight: `:core` cannot touch a `Service`, so `MigrateApi`
+  reports busy transitions through `onBusyChanged` (edge-triggered — calling
+  `startForeground` on every poll re-posts the notification) and
+  `MigrateService` decides what that means. Both `onTimeout` overloads are
+  implemented (one argument in API 34, two in API 35) and both call
+  `cancelCurrentJob()`, so the job row ends as **cancelled** instead of
+  sitting at "running" about a process that no longer exists. Start the
+  service with `startService`, never `startForegroundService`: the latter
+  demands a `startForeground` within five seconds and there is nothing to
+  protect yet.
 - **A Qobuz `user_auth_token` belongs to the app that minted it.** The `app_id`
   and the token move together; presenting a mismatched pair is a 401 that reads
   exactly like an expired sign-in.

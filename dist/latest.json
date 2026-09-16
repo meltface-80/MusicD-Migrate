@@ -1,6 +1,6 @@
 {
-  "version": "0.2.8",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.8.apk",
-  "sha256": "40863474183a69d9c1cb2038aa174aab9fdb074f6f41cf2714295849939c2923",
-  "notes": "The two decisions taken on the last report. An album whose title differs from yours by one trailing tag that says something — \"(Live)\", a venue, a date — is no longer refused outright: it goes to the album's own TRACK LISTING, which decides it. 634 of the 1,443 near-misses in two real reports are that shape. It needs 'check the track listing' turned ON; with it off nothing changed and a live tag never passes on a title alone. Five edition words added too — bonus edition, collector's edition, international version, U.S. version and the re-master spellings — while extended version, remixes, DJ mix, acoustic, Vol. 2 and EP were deliberately refused as different recordings."
+  "version": "0.2.9",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.9.apk",
+  "sha256": "268eca397ae4b8391c857399ba0c8cdb545ea8d2f98c39918d9e25cd2d14877a",
+  "notes": "The crash from a real phone. Android 14 caps a dataSync foreground service at six hours in any 24, and 0.2.5 held one for the whole life of the app — so the cap was certain to be reached, and the system then killed the process with ForegroundServiceDidNotStopInTimeException, in the middle of nothing at all. The service is now in the foreground only while a migration or a Roon scan is actually running: the notification appears with the work and goes when it finishes, which is what the notification is for. If the cap is somehow still reached, the run is cancelled and the job row says so instead of sitting at \"running\" for ever. The crash report also no longer files a stack trace under the wrong death: a saved trace hours older than the crash Android is describing is labelled as a separate one."
 }
