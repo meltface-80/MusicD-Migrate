@@ -222,6 +222,52 @@ test("a refresh that fails is not remembered as the one in flight", async () => 
   assert.strictEqual(sp.session.accessToken, "AT2");
 });
 
+test("the pager maps each page as it goes, not all of them at the end", async () => {
+  // Deterministic twin of the heap test in ClientsTest.kt. What the APK died
+  // of was the PEAK during a walk: /me/albums hands back the FULL album
+  // object, ~15KB of JSON once available_markets is counted, and a pager that
+  // collects the raw pages and maps them afterwards holds the whole library
+  // at once. On a phone that is a 256MB heap gone before a single album has
+  // been matched; the same pager on the JVM peaked at 187MB for 1,500 albums.
+  //
+  // Interleaving is the observable proof: mapping inside the loop means
+  // request, map, map, request, map. Collecting first means request, request,
+  // then all the mapping.
+  const order = [];
+  let call = 0;
+  const fetch = async () => {
+    order.push("request");
+    call++;
+    const body = call === 1
+      ? { total: 3, items: [{ id: "a" }, { id: "b" }] }
+      : { total: 3, items: [{ id: "c" }] };
+    return { ok: true, status: 200, headers: { get: () => null },
+             text: async () => JSON.stringify(body) };
+  };
+  const sp = new Spotify(liveSession, { fetch });
+  const out = await sp.pageAll("/whatever", {}, null, 2, (item) => {
+    order.push("map:" + item.id);
+    return { mapped: item.id };
+  });
+
+  assert.deepStrictEqual(out, [{ mapped: "a" }, { mapped: "b" }, { mapped: "c" }]);
+  assert.deepStrictEqual(order,
+    ["request", "map:a", "map:b", "request", "map:c"],
+    "each page is mapped before the next one is fetched");
+});
+
+test("a mapper that rejects an item drops it rather than pushing a null", async () => {
+  // toTrack and toAlbum both return null for an item they cannot read — a
+  // podcast episode in a saved-tracks list, say — and the pager has to
+  // swallow those, because the callers no longer filter afterwards.
+  const fetch = async () => ({ ok: true, status: 200, headers: { get: () => null },
+    text: async () => JSON.stringify({ total: 2, items: [{ id: "a" }, { id: "b" }] }) });
+  const sp = new Spotify(liveSession, { fetch });
+  const out = await sp.pageAll("/whatever", {}, null, 2,
+    (item) => (item.id === "a" ? { mapped: "a" } : null));
+  assert.deepStrictEqual(out, [{ mapped: "a" }]);
+});
+
 // ----------------------------------------------------------- write batching
 
 test("Spotify playlist writes batch at 100 and use track URIs", async () => {

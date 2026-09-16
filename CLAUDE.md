@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 208 tests
+npm test                                                  # 210 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 196 tests
+cd android && ./gradlew :core:test                         # 197 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -327,6 +327,24 @@ directory as-is.
   in-flight promise and clears it however it settles. A Qobuz
   `user_auth_token` neither expires nor rotates, which is why this can only
   ever bite on a run INTO Spotify.
+- **A PAGER MAPS EACH PAGE AS IT GOES.** `pageAll` takes a mapper in both
+  languages and in both clients, and that is not a convenience — it is what
+  stops a walk holding the whole library's raw JSON at once. Spotify's
+  `/me/albums` returns the FULL album object, which carries
+  `available_markets` (about 180 country codes) **on the album and on every
+  one of its tracks**: roughly 15KB of JSON per saved album, several times
+  that once parsed. Collecting the raw pages and mapping afterwards peaked at
+  **187MB for 1,500 albums** in `ClientsTest`, so a library of a couple of
+  thousand exhausts the APK's 256MB heap — which is exactly how 0.2.3 died on
+  a real phone, before it had matched a single album:
+  `OutOfMemoryError … growth limit 268435456; giving up on allocation because
+  <1% of heap free after GC`. Mapping inside the loop keeps ONE page live: an
+  `Album` is a few hundred bytes against fifty-odd kilobytes of JSON.
+  Node's heap is large enough to hide this, which is why the JavaScript half
+  had it too and nothing noticed. Two tests guard it — a heap-growth test
+  sampled BETWEEN pages on the Kotlin side (the peak is what kills, and a
+  pager looks innocent once it has returned), and a deterministic
+  request/map interleaving test in JavaScript.
 - **An Error is not an Exception, and `catch (e: Exception)` does not catch
   one.** An `OutOfMemoryError`, a `StackOverflowError` or a missing class
   sails straight through, kills the worker thread, and Android's default

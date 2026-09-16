@@ -1,6 +1,6 @@
 {
-  "version": "0.2.4",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.4.apk",
-  "sha256": "5448300736dc5cc93cb3a6060c31ba15a21ee13183b27fdb81c4fa1234b0f976",
-  "notes": "For the Roon to Spotify crash. The app now asks Android why it died last time and writes it to Downloads/musicd-crash.txt on the next launch, so a crash on a phone stops being unreportable. A run that dies of an Error rather than an exception is recorded as a failed run instead of killing the app silently. And the Spotify token refresh is now shared between the four concurrent workers: an access token lasts an hour, a big library does not, and four simultaneous refreshes with the same single-use rotating token was destroying the sign-in. None of that can happen on a run into Qobuz, whose token neither expires nor rotates."
+  "version": "0.2.5",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.2.5.apk",
+  "sha256": "90a90221b79c0f7c8b52edf811af1d5957dd49304553140118fae0547d08503a",
+  "notes": "Fixes the Roon to Spotify crash: an OutOfMemoryError, reported by 0.2.4 rather than killing the app silently. Reading the target's saved albums held every page of raw JSON at once, and Spotify's /me/albums sends the full album object with about 180 country codes on the album and on every track — some 15KB apiece. 187MB for 1,500 albums in a test, against a 256MB heap on the phone, and the run died before matching anything. Both pagers in both clients now map each page as they go and drop the JSON, so a walk holds one page instead of a library."
 }

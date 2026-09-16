@@ -190,17 +190,21 @@ class QobuzClient(
 
     /** Offset paging, with the section picked out by the caller because Qobuz
      *  names it differently on every endpoint. */
-    private fun pageAll(
+    private fun <T> pageAll(
         endpoint: String, params: Map<String, Any?>, pick: (JSONObject?) -> List<JSONObject>,
-        limit: Int = 500
-    ): List<JSONObject> {
-        val out = ArrayList<JSONObject>()
+        limit: Int = 500, map: (JSONObject) -> T?
+    ): List<T> {
+        val out = ArrayList<T>()
         var offset = 0
         while (true) {
             val r = request(endpoint, params + mapOf("limit" to limit, "offset" to offset))
             val items = pick(r)
             if (items.isEmpty()) break
-            out.addAll(items)
+            // Mapped here, not by the caller, so one page of raw JSON is live
+            // at a time rather than the whole library's. Qobuz's favourites
+            // are leaner than Spotify's albums, but 6,767 of them is still
+            // 6,767 parsed objects held for no reason. See SpotifyClient.
+            for (item in items) map(item)?.let { out.add(it) }
             offset += items.size
             if (items.size < limit) break
             if (offset > 100000) break
@@ -214,7 +218,7 @@ class QobuzClient(
             ?: emptyList()
 
     override fun playlists(): List<Playlist> =
-        pageAll("playlist/getUserPlaylists", emptyMap(), { section(it, "playlists") }).map { p ->
+        pageAll("playlist/getUserPlaylists", emptyMap(), { section(it, "playlists") }) { p ->
             // Qobuz lists playlists somebody else made and this user
             // SUBSCRIBED to alongside their own, indistinguishable except by
             // owner. Ownership is reported and the UI lets the user decide.
@@ -230,19 +234,19 @@ class QobuzClient(
 
     override fun playlistTracks(playlistId: String): List<Track> =
         pageAll("playlist/get", mapOf("playlist_id" to playlistId, "extra" to "tracks"),
-            { section(it, "tracks") }).mapNotNull { toQobuzTrack(it, null) }
+            { section(it, "tracks") }) { toQobuzTrack(it, null) }
 
     override fun savedTracks(): List<Track> =
         pageAll("favorite/getUserFavorites", mapOf("type" to "tracks"),
-            { section(it, "tracks") }).mapNotNull { toQobuzTrack(it, null) }
+            { section(it, "tracks") }) { toQobuzTrack(it, null) }
 
     override fun savedAlbums(): List<Album> =
         pageAll("favorite/getUserFavorites", mapOf("type" to "albums"),
-            { section(it, "albums") }).mapNotNull { toQobuzAlbum(it) }
+            { section(it, "albums") }) { toQobuzAlbum(it) }
 
     override fun followedArtists(): List<Artist> =
         pageAll("favorite/getUserFavorites", mapOf("type" to "artists"),
-            { section(it, "artists") }).map { Artist(it.str("id"), it.str("name")) }
+            { section(it, "artists") }) { Artist(it.str("id"), it.str("name")) }
 
     // --------------------------------------------------------------- searches
 

@@ -26,6 +26,13 @@ dependencies {
 tasks.test {
     testLogging { events("passed", "failed", "skipped") }
 
+    // Pinned so the memory test means something. ClientsTest walks a library
+    // big enough to have put a phone's 256MB heap on the floor, and it
+    // asserts how much of it stays live — a number that is only comparable
+    // against a fixed ceiling. The default is whatever the daemon happens to
+    // have.
+    maxHeapSize = "512m"
+
     // ContractTest reads files OUTSIDE this module — public/app.js, index.js,
     // lib/canon.js, lib/service.js — and compares them with the Kotlin side.
     // Gradle cannot know that, so it would report the task up to date after a
