@@ -16,6 +16,7 @@ process.env.PORT = "0";
 process.env.MIGRATE_PIN = "1234";
 
 const { server } = require("../../index");
+const PKCE = require("../../lib/spotify-pkce");
 const store = require("../../lib/store").open(DATA_DIR);
 
 const base = () => `http://127.0.0.1:${server.address().port}`;
@@ -72,6 +73,29 @@ test("a migration is refused while not signed in", async () => {
   assert.match((await res.json()).error, /Sign in to Qobuz/);
 });
 
+test("with nothing saved, the baked-in client id is the one in force", async () => {
+  // Deliberately before the save test below, which writes an id into the same
+  // store. Spotify has frozen new registrations, so a setup step nobody can
+  // complete is an unusable app; the id is baked in and the page shows the
+  // one actually in force rather than an empty box.
+  const j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.strictEqual(j.spotify.clientId, PKCE.DEFAULT_CLIENT_ID);
+  assert.match(PKCE.DEFAULT_CLIENT_ID, /^[0-9a-f]{32}$/,
+    "a Spotify client id is 32 hex characters");
+});
+
+test("a sign-in starts with no id saved, and starts with the baked-in one", async () => {
+  // This used to be a 400 telling the user to set an id first. There is
+  // nowhere to get one, so it was a dead end.
+  const res = await fetch(base() + "/api/spotify/oauth/start", withPin({ redirect: "manual" }));
+  assert.strictEqual(res.status, 302);
+  const to = new URL(res.headers.get("location"));
+  assert.strictEqual(to.host, "accounts.spotify.com");
+  assert.strictEqual(to.searchParams.get("client_id"), PKCE.DEFAULT_CLIENT_ID);
+  // The path is the whole reason a shared id works at all.
+  assert.match(to.searchParams.get("redirect_uri"), /\/api\/spotify\/callback$|\/login$/);
+});
+
 test("a malformed Spotify client id is refused with an actionable message", async () => {
   const res = await fetch(base() + "/api/spotify/client-id", withPin({
     method: "POST", headers: { "content-type": "application/json" },
@@ -90,6 +114,8 @@ test("a well-formed client id is accepted and reported back", async () => {
   assert.strictEqual(res.status, 200);
   const j = await (await fetch(base() + "/api/state", withPin())).json();
   assert.strictEqual(j.spotify.clientId, id);
+  assert.notStrictEqual(id, PKCE.DEFAULT_CLIENT_ID,
+    "a saved id WINS over the baked-in one — it is a fallback, not an override");
 });
 
 test("an unknown job is a 404, not a crash", async () => {

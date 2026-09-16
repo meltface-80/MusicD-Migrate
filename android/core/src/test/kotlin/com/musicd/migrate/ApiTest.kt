@@ -5,6 +5,7 @@ import com.musicd.migrate.http.Assets
 import com.musicd.migrate.http.Request
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -84,6 +85,37 @@ class ApiTest {
         assertEquals(400, res.status)
         assertTrue(JSONObject(res.body.toString(Charsets.UTF_8)).getString("error")
             .contains("Sign in to Qobuz"))
+    }
+
+    @Test fun `with nothing saved, the baked-in client id is the one in force`() {
+        // Spotify has frozen new registrations, so a setup step nobody can
+        // complete is an unusable app. The id is baked in and the page is
+        // shown the one actually in force rather than an empty box.
+        assertEquals(Pkce.DEFAULT_CLIENT_ID,
+            get(api(), "/api/state").getJSONObject("spotify").getString("clientId"))
+    }
+
+    @Test fun `a sign-in starts with no id saved, using the baked-in one`() {
+        // This used to be a 400 telling the user to set an id first. There is
+        // nowhere to get one, so it was a dead end.
+        val res = raw(api(), "GET", "/api/spotify/oauth/start")
+        assertEquals(302, res.status)
+        val to = res.headers["Location"].orEmpty()
+        assertTrue(to, to.startsWith("https://accounts.spotify.com/authorize"))
+        assertTrue("the authorise URL must carry the id in force: $to",
+            to.contains("client_id=${Pkce.DEFAULT_CLIENT_ID}"))
+    }
+
+    @Test fun `a saved client id wins over the baked-in one`() {
+        val store = MemoryStore()
+        val a = api(store)
+        val mine = "b".repeat(32)
+        assertEquals(200, post(a, "/api/spotify/client-id", """{"clientId":"$mine"}""").status)
+        assertEquals(mine, get(a, "/api/state").getJSONObject("spotify").getString("clientId"))
+        assertNotEquals("it is a fallback, not an override", mine, Pkce.DEFAULT_CLIENT_ID)
+
+        val to = raw(a, "GET", "/api/spotify/oauth/start").headers["Location"].orEmpty()
+        assertTrue("and the sign-in uses the saved one: $to", to.contains("client_id=$mine"))
     }
 
     @Test fun `a malformed Spotify client id is refused with an actionable message`() {

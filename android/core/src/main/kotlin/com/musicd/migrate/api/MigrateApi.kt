@@ -80,8 +80,21 @@ class MigrateApi(
             .put("appId", s.appId).put("name", s.name).toString())
     }
 
+    /**
+     * The Client ID in force: whatever is saved, else the baked-in one.
+     *
+     * One function rather than the four `store.setting("spotify.clientId")`
+     * reads this replaces — a fallback applied at three sites out of four is a
+     * sign-in that starts with one id and redeems the code with another, which
+     * fails with an error about the CODE and not about the id.
+     *
+     * See [Pkce.DEFAULT_CLIENT_ID] for what is baked in and what it costs.
+     */
+    private fun spotifyClientId(): String =
+        store.setting("spotify.clientId").orEmpty().ifEmpty { Pkce.DEFAULT_CLIENT_ID }
+
     private fun spotifySession(): SpotifySession? {
-        val clientId = store.setting("spotify.clientId").orEmpty()
+        val clientId = spotifyClientId()
         if (clientId.isEmpty()) return null
         val j = parseObject(store.setting("spotify.session") ?: return null) ?: return null
         val refresh = j.strOrNull("refreshToken") ?: return null
@@ -215,7 +228,7 @@ class MigrateApi(
             append(",\"name\":").append(jsonQuote(q?.name.orEmpty())).append("},")
             append("\"spotify\":{\"signedIn\":").append(sp != null)
             append(",\"name\":").append(jsonQuote(sp?.name.orEmpty()))
-            append(",\"clientId\":").append(jsonQuote(store.setting("spotify.clientId").orEmpty()))
+            append(",\"clientId\":").append(jsonQuote(spotifyClientId()))
             append(",\"redirectUri\":").append(jsonQuote(redirect))
             append(",\"redirectCheck\":{\"ok\":").append(check.ok)
             append(",\"reason\":").append(jsonQuote(check.reason)).append("}},")
@@ -313,7 +326,7 @@ class MigrateApi(
     }
 
     private fun spotifyStart(req: Request): Response {
-        val clientId = store.setting("spotify.clientId").orEmpty()
+        val clientId = spotifyClientId()
         if (clientId.isEmpty()) {
             return Response.text(400, "Set your Spotify Client ID first.")
         }
@@ -367,7 +380,7 @@ class MigrateApi(
         }
 
         val tokens = SpotifyClient.exchangeCode(http,
-            store.setting("spotify.clientId").orEmpty(), parsed.code,
+            spotifyClientId(), parsed.code,
             pending.str("redirectUri"), verifier)
         store.deleteSetting("spotify.pending")
         saveSpotify(tokens)

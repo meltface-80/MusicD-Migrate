@@ -138,9 +138,23 @@ function qobuzClient() {
   return new Qobuz(s);
 }
 
+/**
+ * The Client ID in force: whatever is saved, else the baked-in one.
+ *
+ * One function rather than the five `store.get("spotify.clientId", "")` calls
+ * this replaces — a fallback applied at four sites out of five is a sign-in
+ * that starts with one id and redeems the code with another, which fails with
+ * an error about the code, not about the id.
+ *
+ * See PKCE.DEFAULT_CLIENT_ID for what is baked in and what that costs.
+ */
+function spotifyClientId() {
+  return store.get("spotify.clientId", "") || PKCE.DEFAULT_CLIENT_ID;
+}
+
 function spotifyClient() {
   const s = store.get("spotify.session");
-  const clientId = store.get("spotify.clientId", "");
+  const clientId = spotifyClientId();
   if (!s || !s.refreshToken || !clientId) return null;
   return new Spotify(Object.assign({}, s, { clientId }), {
     // Persisted on every refresh. Spotify rotates refresh tokens, so a refresh
@@ -221,7 +235,7 @@ app.get("/api/state", async (req, res) => {
     spotify: {
       signedIn: !!(sp && sp.refreshToken),
       name: (sp && sp.name) || "",
-      clientId: store.get("spotify.clientId", ""),
+      clientId: spotifyClientId(),
       redirectUri: PKCE.callbackUrlFrom(req),
       redirectCheck: PKCE.checkRedirectUri(PKCE.callbackUrlFrom(req)),
     },
@@ -421,7 +435,7 @@ app.post("/api/spotify/client-id", (req, res) => {
 });
 
 app.get("/api/spotify/oauth/start", (req, res) => {
-  const clientId = store.get("spotify.clientId", "");
+  const clientId = spotifyClientId();
   if (!clientId) return res.status(400).send("Set your Spotify Client ID first.");
   const redirectUri = PKCE.callbackUrlFrom(req, "/api/spotify/callback");
   const verifier = PKCE.createVerifier();
@@ -488,7 +502,7 @@ async function finishSpotify(parsed) {
   }
 
   const tokens = await exchangeCode({
-    clientId: store.get("spotify.clientId", ""),
+    clientId: spotifyClientId(),
     code: parsed.code,
     redirectUri: pending.redirectUri,
     verifier: pending.verifier,

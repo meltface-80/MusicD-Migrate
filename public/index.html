@@ -102,19 +102,24 @@
                 title="Click to copy"></code>
           <span class="warn" id="redirect-warn" hidden></span>
 
+          <p class="hint">
+            <b>This build has one filled in already</b>, because a registration
+            you cannot obtain is not a setup step. Know what it is: it is one of
+            the well-known ids the open-source Spotify world shares, so the
+            consent screen will name <i>that</i> application rather than this
+            one, and the requests count against its quota. It works here because
+            the address above is whitelisted on it.
+          </p>
+
           <ol class="steps">
-            <li><b>If you already have a Spotify app</b> — from anything at all —
-              it still works; only new ones are frozen. Open it on
+            <li><b>If you have a Spotify app of your own</b> — from anything at
+              all — prefer it; only new registrations are frozen. Open it on
               <a href="https://developer.spotify.com/dashboard" target="_blank"
                  rel="noopener">developer.spotify.com/dashboard</a> →
               <b>Settings</b> → <b>Edit</b>, add the address above under
-              <b>Redirect URIs</b>, save, then copy the <b>Client ID</b>.</li>
-            <li><b>If you don't</b>, the open-source Spotify world (librespot,
-              ncspot, Spotty, SpotOn) shares well-known Client IDs among its
-              users, and one of those can be pasted below. Be aware what that
-              is: the consent screen will name <i>their</i> app rather than this
-              one, and your requests count against their quota. This app does
-              not ship one — that choice is yours to make.</li>
+              <b>Redirect URIs</b>, save, then paste the <b>Client ID</b> below.
+              A saved id always wins over the built-in one.</li>
+            <li><b>If you don't</b>, leave the field alone and sign in.</li>
           </ol>
 
           <p class="hint">
