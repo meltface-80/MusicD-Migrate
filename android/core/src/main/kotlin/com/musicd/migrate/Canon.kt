@@ -99,9 +99,6 @@ object Canon {
 
     private val SPLIT_PRIMARY =
         Regex("""\s+(?:feat\.?|ft\.?|featuring|with|vs\.?|&)\s+|[,;]|/""", RegexOption.IGNORE_CASE)
-    private val SPLIT_ALL =
-        Regex("""\s+(?:feat\.?|ft\.?|featuring|with|vs\.?)\s+|[,;]|\s+&\s+|/""",
-            RegexOption.IGNORE_CASE)
 
     /**
      * The artist a track is filed under, with collaborators dropped.
@@ -114,6 +111,48 @@ object Canon {
         val raw = s ?: ""
         val cut = SPLIT_PRIMARY.split(raw).firstOrNull()
         return canon(if (cut.isNullOrBlank()) raw else cut)
+    }
+
+    /**
+     * A collaboration marker always separates artists. A list punctuation
+     * mark only sometimes does -- see [splitArtists].
+     */
+    private val COLLAB =
+        Regex("""\s+(?:feat\.?|ft\.?|featuring|with|vs\.?)\s+""", RegexOption.IGNORE_CASE)
+    private val LIST_PUNCT = Regex("""\s*[,;/]\s*|\s+&\s+""")
+    private val HAS_ALNUM = Regex("[a-zA-Z0-9]")
+
+    /**
+     * Split a string that may name several artists -- but not through a NAME.
+     *
+     * "Carla Bley/Steve Swallow/Andy Sheppard" is three people. "AC/DC" is
+     * one band, "Belle & Sebastian" is one band, and "Earth, Wind & Fire" is
+     * one band with both a comma and an ampersand in its name. Splitting
+     * those leaves "AC", "Belle" and "Earth", which match nothing and search
+     * for nothing.
+     *
+     * The rule: a comma, semicolon, slash or ampersand separates artists only
+     * when EVERY segment it produces is more than one word. Two people are
+     * "Vincent Peirani & Emile Parisien" -- first name and last name, on both
+     * sides. A band with punctuation in its name almost always has a one-word
+     * piece: AC, DC, Belle, Fire, Die, For.
+     *
+     * Measured on a real 9,635-album library: 88 albums were refused because
+     * a band's own name had been cut in half this way.
+     *
+     * Kept in step with splitArtists in lib/canon.js by hand.
+     */
+    fun splitArtists(value: String?): List<String> {
+        val out = ArrayList<String>()
+        for (piece in COLLAB.split(value ?: "")) {
+            val parts = LIST_PUNCT.split(piece).map { it.trim() }.filter { it.isNotEmpty() }
+            val separates = parts.size > 1 && parts.all { it.split(Regex("\\s+")).size > 1 }
+            // A piece with no letters or digits in it is punctuation, not an
+            // artist.
+            if (separates) out.addAll(parts.filter { HAS_ALNUM.containsMatchIn(it) })
+            else if (HAS_ALNUM.containsMatchIn(piece)) out.add(piece.trim())
+        }
+        return out
     }
 
     /**
@@ -132,20 +171,62 @@ object Canon {
      */
     fun artistNames(value: String?): List<String> {
         val out = ArrayList<String>()
-        for (part in SPLIT_ALL.split(value ?: "")) {
+        for (part in splitArtists(value)) {
             val t = part.trim()
             if (t.isNotEmpty() && !out.contains(t)) out.add(t)
         }
         return out
     }
 
-    /** Every artist named, canonicalised. Order is not meaningful. */
+    /** A leading "The"/"A"/"Los" -- never the difference between two acts. */
+    private val LEADING_ARTICLE = Regex("^(?:the|a|an|los|las|les)\\s+")
+
+    /**
+     * Words that name an ENSEMBLE rather than a different act: "Vijay Iyer"
+     * and "Vijay Iyer Trio" are the same artist billed two ways, and jazz
+     * does this constantly. Deliberately short, and deliberately without
+     * "tribute", "covers", "band" or "project": a tribute act IS somebody
+     * else, and that is the mistake this whole file exists to avoid.
+     *
+     * Kept in step with ENSEMBLE_WORDS in lib/canon.js by hand.
+     */
+    val ENSEMBLE_WORDS = listOf("trio", "quartet", "quintet", "sextet", "septet",
+        "octet", "orchestra", "ensemble", "quartett", "big band")
+
+    /**
+     * Every FORM of every artist a value names, canonicalised.
+     *
+     * Every form, not just every name, and that is the point. [overlap] needs
+     * one shared entry, so listing the name as written alongside the pieces
+     * it might be made of lets two spellings of the same thing agree without
+     * letting a different artist in. Each entry is still a name that appears
+     * in the string.
+     *
+     * The forms are: the whole string; each artist it splits into; and each
+     * of those without a leading article or a trailing ensemble word.
+     *
+     * The whole string matters most, and 42 albums of a real library are why:
+     * Roon writes "Siouxsie and the Banshees", the service writes "Siouxsie &
+     * The Banshees", canon turns "&" into "and" so the two are the SAME
+     * string -- but the split ran first, cut the service's name into
+     * "Siouxsie" and "The Banshees", and nothing was left to agree with. Same
+     * for "To/Die/For" against "To Die For".
+     */
     fun artistSet(value: List<String>?): Set<String> {
         val out = LinkedHashSet<String>()
+        fun add(x: String?) {
+            val c = canon(x ?: "")
+            if (c.isNotEmpty()) out.add(c)
+        }
         for (v in value ?: emptyList()) {
-            for (part in artistNames(v)) {
-                val c = canon(part)
-                if (c.isNotEmpty()) out.add(c)
+            add(v)                                    // the name exactly as written
+            for (name in artistNames(v)) {
+                add(name)
+                val bare = LEADING_ARTICLE.replace(canon(name), "")
+                if (bare.isNotEmpty()) add(bare)
+                for (w in ENSEMBLE_WORDS) {
+                    if (bare.endsWith(" $w")) add(bare.dropLast(w.length + 1).trim())
+                }
             }
         }
         return out

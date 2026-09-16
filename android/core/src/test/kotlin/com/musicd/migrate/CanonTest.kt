@@ -1,6 +1,7 @@
 package com.musicd.migrate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,11 +51,71 @@ class CanonTest {
         assertEquals("portishead", Canon.primaryArtist("Portishead"))
     }
 
-    @Test fun `artistSet splits a string and accepts a list`() {
-        assertEquals(listOf("calvin harris", "rihanna"),
-            Canon.artistSet("Calvin Harris feat. Rihanna").toList())
+    @Test fun `artistSet holds the parts AND the name exactly as written`() {
+        // Both, deliberately. `overlap` needs one shared entry, so carrying
+        // the whole string alongside the pieces lets two spellings of the
+        // same name agree -- see the next test, which is 42 albums of a real
+        // library -- without admitting an artist the string never named.
+        val feat = Canon.artistSet("Calvin Harris feat. Rihanna")
+        assertTrue(feat.contains("calvin harris"))
+        assertTrue(feat.contains("rihanna"))
+        assertTrue("the credit as written", feat.contains("calvin harris feat rihanna"))
+        assertFalse(feat.contains("drake"))
+
         assertEquals(listOf("calvin harris", "rihanna"),
             Canon.artistSet(listOf("Calvin Harris", "Rihanna")).toList())
+    }
+
+    @Test fun `one name written two ways still agrees with itself`() {
+        // 42 albums of a real library were refused for this: Roon writes
+        // "Siouxsie and the Banshees", the service writes "Siouxsie & The
+        // Banshees", canon turns "&" into "and" so the two ARE the same
+        // string -- but the split ran first and cut the service's name into
+        // "Siouxsie" and "The Banshees", leaving nothing to agree with.
+        for ((ours, theirs) in listOf(
+            "Siouxsie and the Banshees" to "Siouxsie & The Banshees",
+            "Derek and the Dominos" to "Derek & The Dominos",
+            "King Gizzard and the Lizard Wizard" to "King Gizzard & The Lizard Wizard",
+            "To Die For" to "To/Die/For"
+        )) {
+            assertTrue("$ours must agree with $theirs",
+                Canon.overlap(Canon.artistSet(ours), Canon.artistSet(theirs)) > 0.0)
+        }
+    }
+
+    @Test fun `a leading article and an ensemble word are not different artists`() {
+        fun same(a: String, b: String) =
+            Canon.overlap(Canon.artistSet(a), Canon.artistSet(b)) > 0.0
+        assertTrue("an article", same("The Modern Jazz Quartet", "Modern Jazz Quartet"))
+        assertTrue(same("A Certain Ratio", "Certain Ratio"))
+        assertTrue("how jazz bills a leader", same("Vijay Iyer Trio", "Vijay Iyer"))
+        assertTrue(same("The Dave Brubeck Quartet", "Dave Brubeck"))
+
+        // The guard that matters: a tribute act IS somebody else.
+        assertFalse(same("Portishead", "Portishead Tribute"))
+        assertFalse(same("Metallica", "Apocalyptica"))
+        assertFalse("a different band of the same name", same("Nirvana", "Nirvana UK"))
+    }
+
+    @Test fun `a band whose own name contains an ampersand or slash is not cut in half`() {
+        // 88 albums of a real library came back "not found" because the
+        // splitter searched for "AC" and compared "Belle".
+        assertEquals(listOf("AC/DC"), Canon.splitArtists("AC/DC"))
+        assertEquals(listOf("Belle & Sebastian"), Canon.splitArtists("Belle & Sebastian"))
+        assertEquals(listOf("Earth, Wind & Fire"), Canon.splitArtists("Earth, Wind & Fire"))
+        assertEquals(listOf("Siouxsie & The Banshees"),
+            Canon.splitArtists("Siouxsie & The Banshees"))
+
+        // And it still splits what is genuinely a list.
+        assertEquals(listOf("Carla Bley", "Steve Swallow", "Andy Sheppard"),
+            Canon.splitArtists("Carla Bley/Steve Swallow/Andy Sheppard"))
+        assertEquals(listOf("Miles Davis", "John Coltrane"),
+            Canon.splitArtists("Miles Davis, John Coltrane"))
+        assertEquals(listOf("Vincent Peirani", "Emile Parisien"),
+            Canon.splitArtists("Vincent Peirani & Emile Parisien"))
+        assertEquals(listOf("Terence Blanchard", "the E-Collective"),
+            Canon.splitArtists("Terence Blanchard featuring the E-Collective"))
+        assertEquals(emptyList<String>(), Canon.splitArtists("/"))
     }
 
     @Test fun `similarity is 1 for equal and 0 for empty`() {

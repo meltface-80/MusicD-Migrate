@@ -146,6 +146,51 @@ test("an exact album title matches even when track counts are unknown", () => {
   assert.strictEqual(r.method, "exact");
 });
 
+test("a tag that repeats the title's own words is not a different record", () => {
+  // From a real library: the service appends a parenthetical the title
+  // already says. Refusing that is refusing a record over nothing.
+  const r = matchAlbum([{ id: "a", title: "Always Let Me Go - Live In Tokyo (Live In Tokyo)",
+    artists: ["Keith Jarrett"] }],
+    { title: "Always Let Me Go - Live In Tokyo", artists: ["Keith Jarrett"] });
+  assert.ok(r.album, r.reason);
+  assert.match(r.reason, /ignoring "\(Live In Tokyo\)"/);
+  assert.match(r.reason, /only repeats what the title or the artist already says/);
+});
+
+test("a tag that is just the artist's name adds nothing either", () => {
+  // Either side may carry it: services append "(Nina Simone)", Roon rips
+  // append ": Stan Getz".
+  const theirs = matchAlbum([{ id: "a", title: "33 Hits (Nina Simone)",
+    artists: ["Nina Simone"] }], { title: "33 Hits", artists: ["Nina Simone"] });
+  assert.ok(theirs.album, theirs.reason);
+  assert.match(theirs.reason, /ignoring "\(Nina Simone\)"/);
+
+  const ours = matchAlbum([{ id: "a", title: "Jazz 'Round Midnight",
+    artists: ["Stan Getz"] }],
+    { title: "Jazz 'Round Midnight: Stan Getz", artists: ["Stan Getz"] });
+  assert.ok(ours.album, ours.reason);
+});
+
+test("a tag that says something NEW is still a different record", () => {
+  // The whole reason the rule above is allowed. None of these repeats
+  // anything: they each add a fact, and the fact is what makes it a different
+  // record — a live take, a remix album, a second volume.
+  const refuse = (mine, theirs, artist) => {
+    const r = matchAlbum([{ id: "a", title: theirs, artists: [artist] }],
+      { title: mine, artists: [artist] });
+    assert.strictEqual(r.album, null,
+      `${theirs} must not be accepted for ${mine}: ${r.reason}`);
+  };
+  refuse("Rio", "Rio (Live)", "Keith Jarrett");
+  refuse("Blue Lines", "Blue Lines - The Remixes", "Massive Attack");
+  refuse("Greatest Hits", "Greatest Hits: Volume 2", "Queen");
+  refuse("Pearls & Embarrassments", "Pearls & Embarrassments, Vol. 2", "Someone");
+  refuse("Aftersun", "Aftersun (Acoustic)", "Someone");
+  // The shortest tag is tried first, so a title with two of them cannot be
+  // cut back to something nobody owns.
+  refuse("Day of the Gusano", "Day Of The Gusano - Live In Mexico (Live)", "Slipknot");
+});
+
 test("a refusal names what the other service DID have, by that artist", () => {
   // 1,465 rows of a real report said "no album called X by that artist" and
   // nothing else, which invites "but I own it, it is definitely on there".

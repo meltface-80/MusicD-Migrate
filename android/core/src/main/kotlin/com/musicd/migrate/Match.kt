@@ -217,6 +217,71 @@ object Match {
             "more than ${tol / 1000}s apart, so a different recording"
     }
 
+    // A trailing "(...)" or "[...]".
+    private val BRACKET_TAIL = Regex("""\s*[(\[][^)\]]*[)\]]\s*$""")
+
+    /**
+     * The trailing tags a title might have, SHORTEST first.
+     *
+     * Shortest first matters: "Always Let Me Go - Live In Tokyo (Live In
+     * Tokyo)" has two, and taking the longest leaves "Always Let Me Go",
+     * which is not the record anybody owns.
+     */
+    private fun tails(title: String): List<String> {
+        val out = ArrayList<String>()
+        BRACKET_TAIL.find(title)?.let { out.add(it.value) }
+        for (sep in listOf(" - ", ": ")) {
+            val at = title.lastIndexOf(sep)
+            if (at > 0) out.add(title.substring(at))
+        }
+        return out.sortedBy { it.length }
+    }
+
+    private val TAG_EDGES = Regex("""^[\s(\[\-:]+|[)\]\s]+$""")
+
+    /**
+     * A trailing tag that adds NOTHING the other side's title and artist did
+     * not already say -- the tag text if so, "" if not.
+     *
+     * Not a relaxation of the title gate, an observation about information.
+     * Two real examples, from a 9,635-album library:
+     *
+     *     owns "Always Let Me Go - Live In Tokyo"
+     *     they have "Always Let Me Go - Live In Tokyo (Live In Tokyo)"
+     *
+     *     owns "33 Hits"                     by Nina Simone
+     *     they have "33 Hits (Nina Simone)"  by Nina Simone
+     *
+     * Neither tag says anything new: the first repeats the title's own words,
+     * the second repeats the artist whose gate this candidate has already
+     * passed. A tag that DOES add something -- "(Live)" on a title that never
+     * mentions live, "Vol. 2", "(Remixes)" -- fails the test and the album is
+     * still refused, which is the whole reason this can be allowed at all.
+     *
+     * Either side may carry the tag: services append "(Live In Tokyo)" and
+     * Roon rips append ": Stan Getz".
+     *
+     * Kept in step with redundantTag in lib/match.js by hand.
+     */
+    private fun redundantTag(a: String?, b: String?, artists: List<String>?): String {
+        val known = HashSet<String>()
+        for (w in Canon.canon(b ?: "").split(" ")) if (w.isNotEmpty()) known.add(w)
+        for (name in Canon.artistSet(artists)) {
+            for (w in name.split(" ")) if (w.isNotEmpty()) known.add(w)
+        }
+        val raw = a ?: ""
+        for (tail in tails(raw)) {
+            val head = Canon.canon(raw.substring(0, raw.length - tail.length))
+            if (head.isEmpty()) continue
+            if (head != Canon.canon(b ?: "") &&
+                head != Canon.canon(Canon.stripVersion(b ?: ""))) continue
+            val inner = Canon.canon(TAG_EDGES.replace(tail, ""))
+            if (inner.isEmpty()) continue
+            if (inner.split(" ").all { it.isEmpty() || known.contains(it) }) return tail.trim()
+        }
+        return ""
+    }
+
     /**
      * Albums, by UPC then by title and artist.
      *
@@ -244,7 +309,8 @@ object Match {
         val wantArtists = Canon.artistSet(want.artists)
         val wantPrimary = Canon.primaryArtist(want.artists.firstOrNull() ?: "")
 
-        data class Scored(val c: Album, val method: String, val score: Double)
+        data class Scored(val c: Album, val method: String, val score: Double,
+                          val tag: String = "")
         val scored = ArrayList<Scored>()
 
         // What was actually there, for the refusal to quote. A report row
@@ -269,7 +335,13 @@ object Match {
 
             val exact = cTitle == wantTitle
             val close = !exact && Canon.canon(Canon.stripVersion(c.title)) == wantStripped
-            if (!exact && !close) continue
+            // A tag on either side that only repeats the title's own words or
+            // the artist's name. See redundantTag: the redundancy is what
+            // makes it safe.
+            val tag = if (exact || close) ""
+                else redundantTag(c.title, want.title, want.artists)
+                    .ifEmpty { redundantTag(want.title, c.title, want.artists) }
+            if (!exact && !close && tag.isEmpty()) continue
 
             // A stripped-title match whose track count disagrees is the
             // standard edition being offered for the deluxe, or the reverse.
@@ -280,7 +352,7 @@ object Match {
             val countScore = if (want.trackCount != null && c.trackCount != null)
                 (if (c.trackCount == want.trackCount) 1.0 else 0.0) else 0.5
             scored.add(Scored(c, if (exact) "exact" else "close",
-                (if (exact) 0.8 else 0.6) + 0.12 * countScore + 0.08 * artistOverlap))
+                (if (exact) 0.8 else 0.6) + 0.12 * countScore + 0.08 * artistOverlap, tag))
         }
 
         if (scored.isEmpty()) {
@@ -305,8 +377,11 @@ object Match {
             compareByDescending<Scored> { it.score }.thenBy { it.c.id })
         val top = ordered.first()
         return Result(album = top.c, method = top.method, score = top.score,
-            reason = if (top.method == "exact") "matched on album title and artist"
-                     else "matched on album title without its edition suffix",
+            reason = if (top.tag.isNotEmpty())
+                    "matched on album title and artist, ignoring \"${top.tag}\" \u2014 " +
+                    "which only repeats what the title or the artist already says"
+                else if (top.method == "exact") "matched on album title and artist"
+                else "matched on album title without its edition suffix",
             shortlist = ordered.map { it.c })
     }
 
