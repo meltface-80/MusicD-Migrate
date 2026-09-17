@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 222 tests
+npm test                                                  # 230 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 214 tests
+cd android && ./gradlew :core:test                         # 222 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -268,6 +268,43 @@ directory as-is.
 - **Obey 429 with the delay the service asked for.** Spotify sends
   `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
   cascade. Qobuz sends nothing, so it backs off exponentially.
+- **A SEARCH THAT COULD NOT BE MADE IS NOT A SEARCH THAT FOUND NOTHING.** This
+  is the "cache the misses" rule one layer up, and it took a second real
+  report to find. `safely()` collapsed every search failure into the caller's
+  fallback, which for a search was `[]` — so a rate-limited or dropped search
+  became "the search returned nothing", an AMBER row reading "your records
+  are not on that service", and it was **cached**, so the refusal outlived the
+  thing that caused it and a re-run did not even retry. `trySearch` in both
+  halves returns the message beside the (empty) results; the caller turns it
+  into a red `failed` row quoting what the service said, and never caches it.
+  Only when nothing matched in the end: a failed barcode search does not
+  matter once the title search has found the record. A search that comes back
+  EMPTY is unchanged — amber, cached, a real answer.
+- **A run whose searches never once work stops.** `noteSearchFailure`, the
+  twin of `noteUnreadable`, with its own pair of counters and deliberately not
+  sharing theirs: a run where searches work and the listing check is broken
+  must still trip the other one. "Roon to Spotify seems unresponsive" was
+  9,635 albums each waiting out a rate-limit backoff and then being recorded
+  as a miss — days to report a library as absent.
+- **Retry-After is authoritative, so never wait LESS than it asked.** The rule
+  was written down and the code broke it: a `Math.min` against
+  `MAX_RETRY_WAIT_MS` turned "wait 600 seconds" into a 60-second wait and
+  another 429, five times over — precisely the cascade the rule exists to
+  prevent. Now a delay longer than a migration will hold for fails AT ONCE,
+  quoting the number Spotify asked for, so the user knows to come back.
+  And **one worker's 429 holds all of them**: Spotify counts per application,
+  so four workers each backing off privately resume together and earn the next
+  429 together. The hold lives on the client, and only ONE place sleeps on it —
+  setting the hold and also sleeping locally waits twice, which a test caught.
+- **A throttled run must LOOK different from a hung one.** `onRateLimit`
+  existed on both clients in both languages and was passed by nothing but the
+  tests — dead code in production. The progress label only changes when an
+  item FINISHES, so a run held thirty seconds a search showed a counter that
+  did not move and no reason at all. It is wired to `noteRateLimit` now, which
+  names the service, the wait and the count, and **bypasses the progress
+  throttle** — the 400ms throttle would otherwise drop the one label nothing
+  overwrites for the next thirty seconds. A test caught that too.
+  `progress.rateLimits` is on the wire and the page shows it as a pill.
 - **Cache the misses. Never cache a failed READ.** A cached "we looked and
   found nothing" is a real answer; treating it as "we have not looked" makes
   every re-run pay again for exactly the tracks that are slowest, because a

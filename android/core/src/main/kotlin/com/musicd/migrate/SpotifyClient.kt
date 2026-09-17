@@ -122,6 +122,9 @@ class SpotifyClient(
     /** Held across a refresh so four workers cannot race for a single-use token. */
     private val tokenLock = Any()
 
+    /** When every worker may fire again. See the 429 branch in [request]. */
+    @Volatile private var holdUntil = 0L
+
     /**
      * A valid access token, refreshing at most ONCE however many callers ask.
      *
@@ -177,6 +180,15 @@ class SpotifyClient(
         var refreshed = false
 
         while (true) {
+            // ONE WORKER'S 429 HOLDS ALL OF THEM. Lookups run four at a time,
+            // and four workers each backing off privately all resume at the
+            // same instant and earn the next 429 together — which is how a
+            // single rate-limit turns into a run that never gets going again.
+            // Spotify counts requests per APPLICATION, so the hold is per
+            // client.
+            val hold = holdUntil - System.currentTimeMillis()
+            if (hold > 0) sleeper(hold)
+
             val token = accessToken()
             val qs = query(params)
             val url = API + path + if (qs.isEmpty()) "" else "?$qs"
@@ -189,15 +201,33 @@ class SpotifyClient(
             }
 
             if (res.status == 429) {
+                // Retry-After is in SECONDS and it is AUTHORITATIVE. This
+                // never waits LESS than it was told: capping the wait and
+                // asking again is exactly the cascade the rule warns about,
+                // and it was here — a minOf against MAX_RETRY_WAIT_MS that
+                // turned "wait five minutes" into five more 429s a minute
+                // apart, then a give-up. If the delay is longer than a
+                // migration will hold for, fail NOW and quote the number, so
+                // the user knows to come back rather than watching a dead
+                // counter.
+                val waitS = res.header("retry-after")?.toLongOrNull() ?: 2L
+                val waitMs = maxOf(waitS, 1L) * 1000L + 250L
+                if (waitMs > MAX_RETRY_WAIT_MS) {
+                    throw RateLimitError(
+                        "Spotify asked this app to wait ${waitMs / 1000}s before its " +
+                        "next request, which is longer than a migration will hold " +
+                        "open. It is rate limiting the Client ID, which is shared — " +
+                        "wait and re-run. Nothing already matched has been lost and " +
+                        "none of this was cached.")
+                }
                 if (attempt++ >= MAX_RETRIES) {
                     throw RateLimitError("Spotify is rate limiting this app and did not let up.")
                 }
-                // Retry-After is in SECONDS and is authoritative. Guessing
-                // shorter turns one 429 into a cascade of them.
-                val waitS = res.header("retry-after")?.toLongOrNull() ?: 2L
-                val waitMs = minOf(maxOf(waitS, 1L) * 1000L + 250L, MAX_RETRY_WAIT_MS)
+                // Set the hold and let the top of the loop do the sleeping.
+                // Sleeping here as well would wait TWICE: once privately and
+                // once on the hold this just set.
+                holdUntil = System.currentTimeMillis() + waitMs
                 onRateLimit(waitMs)
-                sleeper(waitMs)
                 continue
             }
 

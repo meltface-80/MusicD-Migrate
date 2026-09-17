@@ -71,7 +71,10 @@ data class Progress(
     val total: Int = 0,
     val counts: Map<String, Int> = emptyMap(),
     val searches: Int = 0,
-    val cacheHits: Int = 0
+    val cacheHits: Int = 0,
+    /** How many times a service has held the run. The page's spelling, which
+     *  is the authority; lib/migrate.js emits the same name. */
+    val rateLimits: Int = 0
 ) {
     fun toJson(): String = buildString {
         append("{")
@@ -82,6 +85,7 @@ data class Progress(
         append("\"total\":").append(total).append(",")
         append("\"searches\":").append(searches).append(",")
         append("\"cacheHits\":").append(cacheHits).append(",")
+        append("\"rateLimits\":").append(rateLimits).append(",")
         append("\"counts\":{")
         append(counts.entries.joinToString(",") { jsonQuote(it.key) + ":" + it.value })
         append("}}")
@@ -106,9 +110,38 @@ class Migration(
     private val cacheHits = AtomicInteger(0)
     private val unreadable = AtomicInteger(0)
     private val corroborated = AtomicInteger(0)
+    private val searchFails = AtomicInteger(0)
+    private val searchOk = AtomicInteger(0)
+    private val rateLimits = AtomicInteger(0)
 
     @Volatile private var progress = Progress()
     @Volatile private var lastProgressAt = 0L
+
+    /**
+     * A service has told the run to wait, and the page must say so.
+     *
+     * "Roon to Spotify seems unresponsive" was this, invisible: the progress
+     * label only changes when an album FINISHES, so a run whose every search
+     * is being held for thirty seconds shows a counter that does not move and
+     * no reason at all. [SpotifyClient.onRateLimit] existed on both clients,
+     * in both languages, and was passed by nothing but the tests — dead code
+     * in production, which is why a throttled run and a hung one looked
+     * identical.
+     *
+     * Reported as a label rather than an error: the run is working as intended
+     * and will finish. Nothing overwrites the label until something completes,
+     * which is exactly the case where the user needs to read it.
+     *
+     * Kept in step with noteRateLimit in lib/migrate.js by hand.
+     */
+    fun noteRateLimit(ms: Long) {
+        val n = rateLimits.incrementAndGet()
+        // force: the throttle would otherwise drop this, and the label it
+        // dropped is the only thing on the page that explains a run that is
+        // about to sit still for thirty seconds. A test caught exactly that.
+        report(label = "$targetName is rate limiting this app — waiting " +
+            "${ms / 1000}s ($n so far)", force = true)
+    }
 
     fun cancel() { cancelled.set(true) }
 
@@ -130,6 +163,43 @@ class Migration(
             "will migrate on title and artist alone, which is weaker evidence.")
     }
 
+    /**
+     * A search could not be made, so this item has no answer either way.
+     *
+     * Red rather than amber, and NOT cached — the two halves of the same rule
+     * that governs a failed corroboration read. The reason quotes the
+     * service's own words ("Spotify is rate limiting this app and did not let
+     * up"), which is the difference between a user who waits and re-runs and
+     * a user who concludes their records are not on the service.
+     */
+    private fun searchFailed(message: String) = Resolved(
+        null, null, "could not search $targetName: $message",
+        problem = true, searchFailure = true)
+
+    /**
+     * Record that a search failed, and stop the run if searches never work.
+     *
+     * The same circuit breaker as [UNREADABLE_LIMIT] and deliberately a
+     * SEPARATE pair of counters from the corroboration one: if searches work
+     * and the listing check is broken, that one must still fire, and sharing
+     * a "something worked" flag would disarm both.
+     *
+     * This is what "Roon to Spotify seems unresponsive" turned out to be.
+     * Nine thousand albums against a rate-limited search endpoint, every one
+     * waiting out its backoff and then being recorded as a miss, is a run that
+     * takes days to report a library as absent. Stopping on the fiftieth, with
+     * nothing having worked, says so in the first minute instead.
+     */
+    private fun noteSearchFailure(reason: String) {
+        val n = searchFails.incrementAndGet()
+        if (searchOk.get() > 0 || n < UNREADABLE_LIMIT) return
+        throw BrokenRead(
+            "Stopped after $n searches failed and not one succeeded: " + reason +
+            ". Carrying on would have reported your whole library as missing " +
+            "from $targetName. Nothing already matched has been lost, and none " +
+            "of these was cached — re-running picks up where this left off.")
+    }
+
     private fun checkCancelled() { if (cancelled.get()) throw Cancelled() }
 
     private fun countsMap(): Map<String, Int> = counts.mapValues { it.value.get() }
@@ -138,13 +208,17 @@ class Migration(
      *  because a per-track write is a disk write per track. */
     private fun report(
         phase: String = progress.phase, step: String = progress.step,
-        label: String = progress.label, done: Int = progress.done, total: Int = progress.total
+        label: String = progress.label, done: Int = progress.done, total: Int = progress.total,
+        /** Write it out whatever the throttle says. See noteRateLimit: a
+         *  notice nothing overwrites for thirty seconds must not be the one
+         *  the throttle drops. */
+        force: Boolean = false
     ) {
         progress = Progress(phase, step, label, done, total, countsMap(),
-            searches.get(), cacheHits.get())
+            searches.get(), cacheHits.get(), rateLimits.get())
         val now = System.currentTimeMillis()
         val terminal = phase == "done" || phase == "failed" || phase == "cancelled"
-        if (terminal || now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+        if (force || terminal || now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
             lastProgressAt = now
             store.updateProgress(jobId, progress.toJson())
         }
@@ -277,7 +351,13 @@ class Migration(
                     record(JobItem("track", t.id, label, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
-                    record(JobItem("track", t.id, label, "unmatched", note = r.reason))
+                    // Red rather than amber when the lookup could not be
+                    // MADE, exactly as for an album. Recorded first, then
+                    // counted, so the row that stops the run is in the report
+                    // that says why.
+                    record(JobItem("track", t.id, label,
+                        if (r.problem) "failed" else "unmatched", note = r.reason))
+                    if (r.searchFailure) noteSearchFailure(r.reason)
                 }
             }
             report(done = done.incrementAndGet(), label = "Favourite tracks — $label")
@@ -321,7 +401,8 @@ class Migration(
                     // Recorded first, then counted: if this is the one that
                     // stops the run, its row has to be in the report that
                     // says why.
-                    if (r.problem) noteUnreadable(r.reason)
+                    if (r.searchFailure) noteSearchFailure(r.reason)
+                    else if (r.problem) noteUnreadable(r.reason)
                 }
             }
             report(done = done.incrementAndGet(), label = "Favourite albums — $label")
@@ -351,7 +432,9 @@ class Migration(
                     record(JobItem("artist", a.id, a.name, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
-                    record(JobItem("artist", a.id, a.name, "unmatched", note = r.reason))
+                    record(JobItem("artist", a.id, a.name,
+                        if (r.problem) "failed" else "unmatched", note = r.reason))
+                    if (r.searchFailure) noteSearchFailure(r.reason)
                 }
             }
             report(done = done.incrementAndGet(), label = "Artists — ${a.name}")
@@ -526,8 +609,18 @@ class Migration(
          *
          * Kept in step with `problem` in lib/migrate.js by hand.
          */
-        val problem: Boolean = false
+        val problem: Boolean = false,
+        /**
+         * The failed read was a SEARCH. Counted against its own circuit
+         * breaker rather than the corroboration one — see noteSearchFailure.
+         *
+         * Kept in step with `searchFailure` in lib/migrate.js by hand.
+         */
+        val searchFailure: Boolean = false
     )
+
+    /** What a search came back with, and why it did not come back at all. */
+    class Searched<T>(val results: List<T>, val error: String?)
 
     /**
      * The lookup, and the reason a migration takes minutes rather than hours:
@@ -544,11 +637,15 @@ class Migration(
         }
 
         var result: Match.Result? = null
+        // A search that could not be MADE is kept apart from one that came
+        // back empty, and only counts if nothing matched in the end.
+        var searchError: String? = null
 
         if (t.isrc.isNotEmpty()) {
             searches.incrementAndGet()
-            result = Match.matchTrack(safely { target.searchByIsrc(t.isrc) } ?: emptyList(),
-                t, options.strict, options.toleranceMs)
+            val got = trySearch { target.searchByIsrc(t.isrc) }
+            if (got.error != null) searchError = got.error else searchOk.incrementAndGet()
+            result = Match.matchTrack(got.results, t, options.strict, options.toleranceMs)
         }
 
         if ((result == null || !result.matched) && !options.strict) {
@@ -557,10 +654,11 @@ class Migration(
             // Someone" finds nothing on a service that calls it "Blue Monday"
             // by "New Order", and that is the largest source of false misses.
             searches.incrementAndGet()
-            val cands = safely {
+            val got = trySearch {
                 target.searchTracks(Canon.stripVersion(t.title), t.artists.firstOrNull() ?: "")
-            } ?: emptyList()
-            val r2 = Match.matchTrack(cands, t, options.strict, options.toleranceMs)
+            }
+            if (got.error != null) searchError = got.error else searchOk.incrementAndGet()
+            val r2 = Match.matchTrack(got.results, t, options.strict, options.toleranceMs)
             // Keep whichever matched, otherwise whichever refusal is more
             // informative — the ISRC one says only "the search returned
             // nothing", which tells the user nothing they can act on.
@@ -568,6 +666,7 @@ class Migration(
         }
 
         val id = result?.track?.id
+        if (id == null && searchError != null) return searchFailed(searchError)
         store.cacheMatch(sourceName, t.id, targetName, "track", id,
             if (id != null) result?.method ?: "" else result?.reason ?: "not found")
         return if (id != null) Resolved(id, result?.method, result?.reason ?: "")
@@ -632,10 +731,13 @@ class Migration(
         }
 
         var r: Match.Result? = null
+        // As in resolveTrack: "could not ask" is not "asked and got nothing".
+        var searchError: String? = null
         if (want.upc.isNotEmpty()) {
             searches.incrementAndGet()
-            val byUpc = safely { target.searchByUpc(want.upc) } ?: emptyList()
-            r = Match.matchAlbum(byUpc, want, options.strict)
+            val got = trySearch { target.searchByUpc(want.upc) }
+            if (got.error != null) searchError = got.error else searchOk.incrementAndGet()
+            r = Match.matchAlbum(got.results, want, options.strict)
         }
 
         // No barcode, or the barcode found nothing: fall back to title and
@@ -643,10 +745,11 @@ class Migration(
         // (Remastered)" searches for what Spotify calls "Master of Puppets".
         if ((r == null || !r.matched) && !options.strict) {
             searches.incrementAndGet()
-            val cands = safely {
+            val got = trySearch {
                 target.searchAlbums(Canon.stripVersion(a.title), searchArtist(a.artists))
-            } ?: emptyList()
-            val r2 = Match.matchAlbum(cands, want, options.strict)
+            }
+            if (got.error != null) searchError = got.error else searchOk.incrementAndGet()
+            val r2 = Match.matchAlbum(got.results, want, options.strict)
             // Keep whichever matched, else the more informative refusal.
             r = if (r2.matched) r2 else (if (r?.matched == true) r else r2)
         }
@@ -673,6 +776,10 @@ class Migration(
         if (id == null && r.unreadable) {
             return Resolved(null, null, r.reason, problem = true)
         }
+        // Same rule for a search we could not make. Checked after
+        // corroboration, because a failed barcode search does not matter once
+        // the title search has found the record and the listing has agreed.
+        if (id == null && searchError != null) return searchFailed(searchError)
         store.cacheMatch(sourceName, a.id, targetName, "album", id,
             if (id != null) r.method ?: "" else r.reason)
         return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
@@ -738,8 +845,11 @@ class Migration(
                    else Resolved(null, null, c.method)
         }
         searches.incrementAndGet()
-        val r = Match.matchArtist(safely { target.searchArtists(a.name) } ?: emptyList(), a)
+        val got = trySearch { target.searchArtists(a.name) }
+        if (got.error == null) searchOk.incrementAndGet()
+        val r = Match.matchArtist(got.results, a)
         val id = r.artist?.id
+        if (id == null && got.error != null) return searchFailed(got.error)
         store.cacheMatch(sourceName, a.id, targetName, "artist", id,
             if (id != null) r.method ?: "" else r.reason)
         return if (id != null) Resolved(id, r.method, r.reason) else Resolved(null, null, r.reason)
@@ -884,6 +994,41 @@ class Migration(
          * Reads and writes are deliberately NOT wrapped: those failing means
          * something is actually wrong.
          */
+        /**
+         * A SEARCH, keeping "we asked and there is nothing" apart from "we
+         * could not ask".
+         *
+         * `safely` collapses both into null, and every caller turned that
+         * into `emptyList()` — which `matchTrack`/`matchAlbum` then report as
+         * "the search returned nothing", an amber row that reads as "your
+         * library is not on that service". Worse, the caller CACHED it, so a
+         * refusal caused by a rate limit or a dropped connection outlived the
+         * thing that caused it and the next run did not even retry.
+         *
+         * That is the same mistake 0.2.0 shipped one layer down, where a
+         * broken corroboration read turned ~1300 albums amber: **a failed read
+         * is missing data, not evidence.** So the message comes back beside
+         * the (empty) results, and the caller turns it into a red `failed` row
+         * that is never cached — but only if nothing matched anyway, because a
+         * barcode search that failed matters not at all once the title search
+         * has found the record.
+         *
+         * AuthError and Cancelled still pass through: a dead sign-in and a
+         * cancellation must both stop the run.
+         *
+         * Kept in step with trySearch in lib/migrate.js by hand.
+         */
+        private fun <T> trySearch(fn: () -> List<T>): Searched<T> =
+            try {
+                Searched(fn(), null)
+            } catch (e: AuthError) {
+                throw e
+            } catch (e: Cancelled) {
+                throw e
+            } catch (e: Exception) {
+                Searched(emptyList(), e.message ?: e.javaClass.simpleName)
+            }
+
         private fun <T> safely(fn: () -> T): T? =
             try {
                 fn()

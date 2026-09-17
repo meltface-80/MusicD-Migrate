@@ -142,6 +142,47 @@ test("a Spotify 429 is obeyed with the delay Spotify asked for", async () => {
   assert.ok(waits[0] >= 1000 && waits[0] <= 2000, "waited about the second it was told to");
 });
 
+test("a Retry-After longer than a run will hold fails at once and quotes the number", async () => {
+  // The bug this replaces: the wait was capped with Math.min, so "wait 600
+  // seconds" became a 60-second wait and another 429 — five times, then a
+  // give-up. CLAUDE.md's rule is that Retry-After is authoritative and
+  // guessing shorter is what turns one 429 into a cascade; waiting less than
+  // asked was doing exactly that.
+  const fetch = fakeFetch([{ status: 429, headers: { "retry-after": "600" }, body: "" }]);
+  const waits = [];
+  const sp = new Spotify(liveSession, { fetch, onRateLimit: (ms) => waits.push(ms) });
+  await assert.rejects(() => sp.me(), (e) => {
+    assert.match(e.message, /asked this app to wait 600s/, "it quotes what Spotify asked for");
+    assert.match(e.message, /wait and re-run/, "and says what to do about it");
+    assert.strictEqual(e.code, 429, "and it is a rate-limit error, not a generic one");
+    return true;
+  });
+  assert.strictEqual(waits.length, 0, "it did not sleep at all before failing");
+  assert.strictEqual(fetch.calls.length, 1, "and it did not ask again");
+});
+
+test("a 429 holds every worker, not just the one that got it", async () => {
+  // Four workers each backing off privately all resume at the same instant and
+  // earn the next 429 together. Spotify counts per APPLICATION, so the hold
+  // has to be shared — which is what stopped a rate-limited run from ever
+  // getting going again.
+  const fetch = fakeFetch([
+    { status: 429, headers: { "retry-after": "1" }, body: "" },
+    { status: 200, body: { id: "me", display_name: "Me" } },
+  ]);
+  const sp = new Spotify(liveSession, { fetch });
+  await sp.me();                       // takes the 429 and sets the hold
+  const heldUntil = sp._holdUntil;
+  assert.ok(heldUntil > Date.now() - 2000 && heldUntil > 0, "the hold was recorded");
+
+  // A second caller that never sees a 429 itself must still have waited.
+  sp._holdUntil = Date.now() + 300;
+  const started = Date.now();
+  await sp.me();
+  assert.ok(Date.now() - started >= 250,
+    "a worker that saw no 429 still waited out the shared hold");
+});
+
 test("a Spotify 401 refreshes once, then gives up rather than looping", async () => {
   const fetch = fakeFetch([{ status: 401, body: { error: { message: "expired" } } }]);
   const sp = new Spotify(Object.assign({}, liveSession, { refreshToken: "" }),

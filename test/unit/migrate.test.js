@@ -327,10 +327,28 @@ test("a search that throws costs one track, not the whole migration", async () =
     }
     return realText(title, artist);
   };
-  const { result } = await run(source, target, Object.assign({}, NOTHING, { tracks: true }));
-  assert.strictEqual(result.counts.unmatched, 1);
+  const { result, store, items } = await run(source, target,
+    Object.assign({}, NOTHING, { tracks: true }));
+  // FAILED, not unmatched. The run still finishes and the other track is
+  // still written — that is what this test has always guarded — but a search
+  // that could not be MADE is not a search that found nothing. Amber says
+  // "your track is not on that service"; red says "we could not look", and
+  // under a rate limit the amber version reported a whole library as absent.
+  assert.strictEqual(result.counts.failed, 1);
+  assert.strictEqual(result.counts.unmatched, 0);
   assert.strictEqual(result.counts.matched, 1);
   assert.deepStrictEqual(target.written.tracks, ["s2"]);
+
+  const row = items.find((i) => i.status === "failed");
+  assert.match(row.note, /could not search spotify: service blew up/,
+    "the row quotes what the service actually said");
+
+  // And it is NOT cached, or the refusal would outlive the thing that caused
+  // it and the next run would not even retry.
+  assert.ok(!store.cachedMatch("qobuz", "q1", "spotify", "track"),
+    "nothing cached for the track we could not look up");
+  assert.ok(store.cachedMatch("qobuz", "q2", "spotify", "track"),
+    "but the one that DID resolve is cached as normal");
 });
 
 test("an expired sign-in stops the migration rather than reporting misses", async () => {
@@ -806,6 +824,145 @@ test("one album corroborating disarms that for good", async () => {
     "every other album is a failed CHECK, and there are more than the limit");
   assert.ok(result.counts.failed > UNREADABLE_LIMIT,
     "so the run only finished because one success disarmed the breaker");
+});
+
+test("a run whose searches never once work stops instead of grinding for days", async () => {
+  // "Roon to Spotify seems unresponsive", from a real 9,635-album library.
+  // Every search was being rate limited, every one waited out its backoff and
+  // was then recorded as a plain miss, and the progress counter crawled with
+  // nothing on the page to say why. Days to report a library as absent.
+  //
+  // This is the same rule as the corroboration breaker above and deliberately
+  // a SEPARATE pair of counters: a run where searches work and the listing
+  // check is broken must still trip that one.
+  const many = [];
+  for (let i = 0; i < UNREADABLE_LIMIT + 20; i++) {
+    many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  }
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.searchAlbums = async () => {
+    const e = new Error("Spotify is rate limiting this app and did not let up.");
+    e.rateLimited = true;
+    throw e;
+  };
+
+  await assert.rejects(
+    () => run(source, target, Object.assign({}, NOTHING, { albums: true, concurrency: 1 })),
+    (e) => {
+      assert.ok(e.brokenRead, "it is this, and not some other failure");
+      assert.match(e.message, /searches failed and not one succeeded/);
+      assert.match(e.message, /rate limiting this app/,
+        "and it quotes what the service actually said");
+      assert.match(e.message, /re-running picks up where this left off/,
+        "because none of them was cached");
+      return true;
+    });
+});
+
+test("one search working disarms the search breaker for good", async () => {
+  // Proof the breaker is armed by "no search has EVER worked" and not merely
+  // by a count of failures — the same property the corroboration breaker has.
+  // MORE than the limit fail here, and the run still finishes, because the
+  // first one answered.
+  const many = [album({ id: "qgood", title: "Reachable", upc: "" })];
+  for (let i = 0; i < UNREADABLE_LIMIT + 20; i++) {
+    many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  }
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sgood", title: "Reachable",
+    artists: ["Metallica"], upc: "", trackCount: 8 }];
+  const realSearch = target.searchAlbums.bind(target);
+  target.searchAlbums = async (title, artist) => {
+    if (title === "Reachable") return realSearch(title, artist);
+    throw new Error("Spotify is rate limiting this app and did not let up.");
+  };
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, concurrency: 1, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 1, "the one whose search answered");
+  assert.strictEqual(result.counts.failed, many.length - 1,
+    "every other search could not be made, and there are more than the limit");
+  assert.ok(result.counts.failed > UNREADABLE_LIMIT,
+    "so the run only finished because one success disarmed the breaker");
+});
+
+test("a search that comes back EMPTY is a miss, not a failure", async () => {
+  // The distinction the whole change rests on. "We asked and there is
+  // nothing" is a real answer: amber, cached, and not counted against the
+  // breaker. Only "we could not ask" is red.
+  const source = new FakeService("q", { lib: { albums: [album({ id: "qa", upc: "" })] } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [];
+
+  const { result, store } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true }));
+  assert.strictEqual(result.counts.failed, 0);
+  assert.strictEqual(result.counts.unmatched, 1);
+  assert.ok(store.cachedMatch("qobuz", "qa", "spotify", "album"),
+    "and a real miss IS cached, so the next run does not pay for it again");
+});
+
+test("a failed barcode search does not matter once the title search finds it", async () => {
+  // The failure only counts if nothing matched in the end. Otherwise a service
+  // with a flaky `upc:` filter would turn every correct match into a red row.
+  const source = new FakeService("q", { lib: { albums: [album({ id: "qa", upc: "0123456789012" })] } });
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = [{ id: "sa", title: "Master Of Puppets",
+    artists: ["Metallica"], upc: "", trackCount: 8 }];
+  target.searchByUpc = async () => { throw new Error("upc filter is down"); };
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 1);
+  assert.strictEqual(result.counts.failed, 0,
+    "the barcode search failing is irrelevant once the title search answered");
+});
+
+test("a service holding the run says so on the page", async () => {
+  // "Roon to Spotify seems unresponsive." The progress label only changes when
+  // an album FINISHES, so a run whose every search is held for thirty seconds
+  // shows a counter that does not move and no reason at all. onRateLimit
+  // existed on both clients in both languages and was passed by nothing but
+  // the tests — dead code in production, which is why a throttled run and a
+  // hung one looked identical.
+  const source = new FakeService("q", { lib: { albums: [album({ id: "qa" })] } });
+  const target = new FakeService("s", {});
+  const store = tmpStore();
+  store.createJob("job1", "a->b", {}, false);
+  const m = new Migration({ source, target, sourceName: "qobuz",
+    targetName: "spotify", store, jobId: "job1", options: NOTHING });
+
+  m.noteRateLimit(30000);
+  assert.match(m.progress.label, /spotify is rate limiting this app/,
+    "it names the service and what is happening");
+  assert.match(m.progress.label, /waiting 30s/, "and how long");
+  assert.match(m.progress.label, /1 so far/, "and how many times");
+  assert.strictEqual(m.progress.rateLimits, 1);
+
+  m.noteRateLimit(5000);
+  assert.strictEqual(m.progress.rateLimits, 2, "they add up");
+  assert.match(m.progress.label, /2 so far/);
+});
+
+test("the progress carries the field names the page reads", async () => {
+  // public/app.js is the authority on every field name, and it reads
+  // progress.searches, progress.cacheHits and progress.rateLimits. Nothing
+  // else checks this: ContractTest catches a renamed ROUTE or option, not a
+  // renamed field, and the Docker half is the one everyone tests. Mirrored in
+  // ApiTest.kt.
+  const source = new FakeService("q", { lib: { albums: [album({ id: "qa" })] } });
+  const target = new FakeService("s", {});
+  const { store } = await run(source, target, Object.assign({}, NOTHING, { albums: true }));
+  const p = store.job("job1").progress;
+  for (const field of ["phase", "step", "label", "done", "total", "counts",
+                       "searches", "cacheHits", "rateLimits"]) {
+    assert.ok(field in p, "the page reads progress." + field + ", and it is missing");
+  }
 });
 
 test("a live tag is accepted only when the track listing agrees", async () => {
