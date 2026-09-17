@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 235 tests
+npm test                                                  # 239 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 230 tests
+cd android && ./gradlew :core:test                         # 234 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -332,6 +332,25 @@ directory as-is.
 - **Obey 429 with the delay the service asked for.** Spotify sends
   `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
   cascade. Qobuz sends nothing, so it backs off exponentially.
+- **OBEYING A 429 IS NOT ENOUGH — DO NOT EARN IT.** Measured on a real
+  9,635-album Roon library into Spotify: four workers burst past the rolling
+  window within the first few requests, take a 429 with a twenty second
+  `Retry-After`, wait it out, burst again. The page read "spotify is rate
+  limiting this app — waiting 20s (3 so far)" with the counter still on zero.
+  So the client PACES itself: after the first 429 it spaces requests,
+  doubling the gap on each further one (`PACE_START_MS` → `PACE_MAX_MS`) and
+  easing it back after `PACE_DECAY_AFTER` clean requests so one bad patch does
+  not slow a two-hour run for ever. A run that has never been throttled is
+  never paced — the gap starts at ZERO — so Qobuz, small libraries and the
+  tests are untouched, and a test pins that by asserting the slot was never
+  even claimed (without it the guard is an equivalent mutant, because the slot
+  arithmetic is a no-op at a gap of zero).
+  The slot is claimed SYNCHRONOUSLY — before the await, under the lock in
+  Kotlin — or four workers all read the same one and the burst is back.
+  The arithmetic is the argument: that library is one search plus up to two
+  track-listing reads per album, about 29,000 requests. Paced just under the
+  limit it is a couple of hours and it finishes; bursting into a 20s wait
+  every few requests it never does.
 - **A SEARCH THAT COULD NOT BE MADE IS NOT A SEARCH THAT FOUND NOTHING.** This
   is the "cache the misses" rule one layer up, and it took a second real
   report to find. `safely()` collapsed every search failure into the caller's

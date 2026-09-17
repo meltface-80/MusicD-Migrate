@@ -183,6 +183,72 @@ test("a 429 holds every worker, not just the one that got it", async () => {
     "a worker that saw no 429 still waited out the shared hold");
 });
 
+test("a 429 makes the client ask more slowly from then on", async () => {
+  // A real 9,635-album Roon library into Spotify: four workers burst past the
+  // rolling window in the first few requests, earn a 429 with a 20s
+  // Retry-After, wait it out, burst again. The page said "rate limiting this
+  // app — waiting 20s (3 so far)" with the counter still at zero. Obeying the
+  // delay is necessary but not sufficient — something has to stop us asking
+  // too fast.
+  const fetch = fakeFetch([
+    { status: 429, headers: { "retry-after": "1" }, body: "" },
+    { status: 200, body: { id: "me", display_name: "Me" } },
+  ]);
+  const sp = new Spotify(liveSession, { fetch });
+  assert.strictEqual(sp._paceMs, 0, "a run that has never been throttled is not paced");
+
+  await sp.me();
+  assert.ok(sp._paceMs > 0, "after a 429 it paces itself");
+
+  // A second 429 doubles it: the gap that works is unknown and the Client ID
+  // is shared, so it converges rather than guessing.
+  const first = sp._paceMs;
+  const fetch2 = fakeFetch([
+    { status: 429, headers: { "retry-after": "1" }, body: "" },
+    { status: 200, body: { id: "me" } },
+  ]);
+  sp.fetch = fetch2;
+  await sp.me();
+  assert.strictEqual(sp._paceMs, first * 2, "and doubles on the next one");
+});
+
+test("pacing spaces the workers out instead of letting them all fire at once", async () => {
+  // Claimed synchronously, before any await, so four concurrent callers take
+  // four DIFFERENT slots. Reading a shared "next" and then awaiting would give
+  // them all the same one, which is the burst this exists to stop.
+  const fetch = fakeFetch([{ status: 200, body: { id: "me" } }]);
+  const sp = new Spotify(liveSession, { fetch });
+  sp._paceMs = 40;   // as if a 429 had already happened
+
+  const started = Date.now();
+  await Promise.all([sp.me(), sp.me(), sp.me(), sp.me()]);
+  const took = Date.now() - started;
+  assert.ok(took >= 3 * 40 - 15,
+    "four requests were spread over at least three gaps, took " + took + "ms");
+  assert.strictEqual(fetch.calls.length, 4);
+});
+
+test("a long clean run eases the pacing back off", async () => {
+  // One bad patch must not slow the rest of a two-hour migration for ever.
+  const fetch = fakeFetch([{ status: 200, body: { id: "me" } }]);
+  const sp = new Spotify(liveSession, { fetch });
+  sp._paceMs = 1000;
+  sp._sinceThrottle = 0;
+
+  for (let i = 0; i < 50; i++) await sp.me();
+  assert.ok(sp._paceMs < 1000, "it eased back: " + sp._paceMs);
+});
+
+test("a healthy run is never paced at all", async () => {
+  // The cost of this has to be zero for everyone who is not being throttled —
+  // Qobuz, a small library, the tests.
+  const fetch = fakeFetch([{ status: 200, body: { id: "me" } }]);
+  const sp = new Spotify(liveSession, { fetch });
+  for (let i = 0; i < 20; i++) await sp.me();
+  assert.strictEqual(sp._paceMs, 0);
+  assert.strictEqual(sp._nextSlot, 0, "no slot was ever claimed");
+});
+
 test("a Spotify 401 refreshes once, then gives up rather than looping", async () => {
   const fetch = fakeFetch([{ status: 401, body: { error: { message: "expired" } } }]);
   const sp = new Spotify(Object.assign({}, liveSession, { refreshToken: "" }),
