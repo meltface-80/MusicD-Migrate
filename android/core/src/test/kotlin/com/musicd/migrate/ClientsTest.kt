@@ -444,6 +444,63 @@ class ClientsTest {
         assertEquals("no slot was ever claimed", 0L, sp.nextSlotForTest())
     }
 
+    @Test fun `an album the filtered query misses is asked for again as free text`() {
+        // album:"X" artist:"Y" is a quoted AND of two field filters, so any
+        // difference of spelling on either side returns zero rows and the
+        // matcher never sees a candidate. Spotify calls them "Thirty Seconds
+        // to Mars"; Roon says "30 Seconds to Mars". On a real 9,681-album
+        // library 1,969 albums came back "the search returned nothing" against
+        // 908 for the same library on Qobuz, whose search is plain text.
+        val hit = """{"albums":{"items":[{"id":"sa","name":"A Beautiful Lie",""" +
+            """"artists":[{"name":"Thirty Seconds to Mars"}],"total_tracks":12}]}}"""
+        val http = object : Http {
+            val queries = ArrayList<String>()
+            override fun request(
+                method: String, url: String, headers: Map<String, String>, body: ByteArray?,
+                contentType: String?, timeoutMs: Int
+            ): HttpResponse {
+                val q = java.net.URLDecoder.decode(
+                    url.substringAfter("q=").substringBefore("&"), "UTF-8")
+                queries.add(q)
+                // Only the loose query answers.
+                return HttpResponse(200, emptyMap(),
+                    if (q.contains("artist:")) """{"albums":{"items":[]}}""" else hit)
+            }
+        }
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        val out = sp.searchAlbums("A Beautiful Lie", "30 Seconds to Mars")
+
+        assertEquals("it asked twice", 2, http.queries.size)
+        assertTrue("the filtered query first: ${http.queries[0]}",
+            http.queries[0].contains("album:\"A Beautiful Lie\"") &&
+                http.queries[0].contains("artist:\"30 Seconds to Mars\""))
+        assertEquals("then free text, no field filters and no quotes",
+            "A Beautiful Lie 30 Seconds to Mars", http.queries[1])
+        assertEquals("and the candidate came back", 1, out.size)
+        assertEquals("A Beautiful Lie", out[0].title)
+    }
+
+    @Test fun `the filtered query answering costs no second request`() {
+        // The fallback must be free for the albums found the first way,
+        // because it is one extra request per album on a rate-limited service.
+        val http = FakeHttp(listOf(FakeHttp.res(200,
+            """{"albums":{"items":[{"id":"sa","name":"Rumours",""" +
+            """"artists":[{"name":"Fleetwood Mac"}],"total_tracks":11}]}}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        val out = sp.searchAlbums("Rumours", "Fleetwood Mac")
+        assertEquals(1, out.size)
+        assertEquals("asked once", 1, http.calls.size)
+    }
+
+    @Test fun `with no artist there is no looser question to ask`() {
+        // The loose query would be the title on its own, which is what the
+        // filtered one already asked. Asking it twice is a wasted request.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"albums":{"items":[]}}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        assertEquals(emptyList<Album>(), sp.searchAlbums("Obscure B-side", ""))
+        assertEquals("asked once, not twice", 1, http.calls.size)
+    }
+
     @Test fun `a Spotify 401 with no refresh token gives up rather than looping`() {
         val http = FakeHttp(listOf(
             FakeHttp.res(401, """{"error":{"message":"expired"}}""")))

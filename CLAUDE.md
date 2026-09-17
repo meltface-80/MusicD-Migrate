@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 239 tests
+npm test                                                  # 242 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 234 tests
+cd android && ./gradlew :core:test                         # 237 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -448,6 +448,31 @@ directory as-is.
   album is still refused, **and that is the only reason this is allowed at
   all**. The tags are tried SHORTEST first, or a title with two of them gets
   cut back to something nobody owns.
+- **SPOTIFY'S SEARCH IS A QUOTED *AND* OF FIELD FILTERS, SO ASK TWICE.**
+  `album:"X" artist:"Y"` returns ZERO rows on any difference of spelling on
+  either side, and the matcher never gets to judge a candidate it was never
+  shown. Spotify calls 30 Seconds to Mars "Thirty Seconds to Mars" and King
+  Gizzard "King Gizzard & The Lizard Wizard"; Roon does not. Measured on a
+  real 9,681-album library: **1,969 albums came back "the search returned
+  nothing" against 908 for the same library on Qobuz**, whose search is plain
+  text — and the gates were not the problem, as ever. So when the filtered
+  query is empty, `searchAlbums` asks again as FREE TEXT.
+  This widens what is CONSIDERED and not what is ACCEPTED: `matchAlbum` still
+  wants a barcode, or title and artist and the track listing, so a candidate
+  whose artist does not agree is still refused. What it buys even then is a
+  usable reason — "the closest that artist has is X" rather than "nothing
+  called that" — and the unmatched report is the deliverable.
+  It costs one extra request only for the albums that currently find nothing,
+  and a test pins that the second question is not asked when the first one
+  answered, nor when there is no artist to add (the loose query would repeat
+  the filtered one).
+  **Be careful reading a cross-service comparison, though.** Of those 1,969,
+  747 were albums the user already OWNS on Qobuz, which says nothing about
+  Spotify, and 1,097 Qobuz missed too. Only **118** were found by a Qobuz
+  SEARCH and missed by Spotify's — so most of that gap is a real catalogue
+  difference (jazz reissues, Nina Simone compilations, live archive records),
+  not a bug. "Qobuz found it" is not evidence when the library came from
+  Qobuz.
 - **A SEARCH takes one artist, not everything the source calls the artist.**
   `searchArtist`, in both languages. Roon writes an album's artists as one
   slash-joined string — "Carla Bley/Steve Swallow/Andy Sheppard" — and Qobuz

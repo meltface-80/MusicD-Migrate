@@ -249,6 +249,61 @@ test("a healthy run is never paced at all", async () => {
   assert.strictEqual(sp._nextSlot, 0, "no slot was ever claimed");
 });
 
+test("an album the filtered query misses is asked for again as free text", async () => {
+  // album:"X" artist:"Y" is a quoted AND of two field filters, so any
+  // difference of spelling on either side returns zero rows and the matcher
+  // never sees a candidate. Spotify calls them "Thirty Seconds to Mars"; Roon
+  // says "30 Seconds to Mars". On a real 9,681-album library 1,969 albums came
+  // back "the search returned nothing" against 908 for the same library on
+  // Qobuz, whose search is plain text.
+  const seen = [];
+  const fetch = async (url) => {
+    const q = new URL(String(url)).searchParams.get("q");
+    seen.push(q);
+    const hit = !q.includes("artist:");     // only the loose query answers
+    return {
+      ok: true, status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ albums: { items: hit
+        ? [{ id: "sa", name: "A Beautiful Lie", artists: [{ name: "Thirty Seconds to Mars" }],
+             total_tracks: 12 }]
+        : [] } }),
+    };
+  };
+  const sp = new Spotify(liveSession, { fetch });
+  const out = await sp.searchAlbums("A Beautiful Lie", "30 Seconds to Mars");
+
+  assert.strictEqual(seen.length, 2, "it asked twice");
+  assert.match(seen[0], /album:"A Beautiful Lie" artist:"30 Seconds to Mars"/,
+    "the filtered query first");
+  assert.strictEqual(seen[1], "A Beautiful Lie 30 Seconds to Mars",
+    "then free text, no field filters and no quotes");
+  assert.strictEqual(out.length, 1, "and the candidate came back");
+  assert.strictEqual(out[0].title, "A Beautiful Lie");
+});
+
+test("the filtered query answering costs no second request", async () => {
+  // The fallback must be free for the 80% of albums that are found the first
+  // way, because it is one extra request per album on a rate-limited service.
+  const fetch = fakeFetch([{ status: 200, body: { albums: { items: [
+    { id: "sa", name: "Rumours", artists: [{ name: "Fleetwood Mac" }], total_tracks: 11 },
+  ] } } }]);
+  const sp = new Spotify(liveSession, { fetch });
+  const out = await sp.searchAlbums("Rumours", "Fleetwood Mac");
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(fetch.calls.length, 1, "asked once");
+});
+
+test("with no artist there is no looser question to ask", async () => {
+  // The loose query would be the title on its own, which is what the filtered
+  // one already asked. Asking it twice is a wasted request.
+  const fetch = fakeFetch([{ status: 200, body: { albums: { items: [] } } }]);
+  const sp = new Spotify(liveSession, { fetch });
+  const out = await sp.searchAlbums("Obscure B-side", "");
+  assert.deepStrictEqual(out, []);
+  assert.strictEqual(fetch.calls.length, 1, "asked once, not twice");
+});
+
 test("a Spotify 401 refreshes once, then gives up rather than looping", async () => {
   const fetch = fakeFetch([{ status: 401, body: { error: { message: "expired" } } }]);
   const sp = new Spotify(Object.assign({}, liveSession, { refreshToken: "" }),

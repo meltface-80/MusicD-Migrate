@@ -484,13 +484,46 @@ class SpotifyClient(
         return albums.map { it.copy(upc = code) }
     }
 
+    /**
+     * Albums, asked for twice if the first way finds nothing.
+     *
+     * `album:"X" artist:"Y"` is a quoted AND of two field filters, so ANY
+     * difference of spelling on either side returns zero rows rather than a
+     * near miss — and the matcher never gets to judge a candidate it was
+     * never shown. Spotify calls 30 Seconds to Mars "Thirty Seconds to Mars"
+     * and King Gizzard "King Gizzard & The Lizard Wizard"; Roon does not. On
+     * a real 9,681-album library 1,969 albums came back "the search returned
+     * nothing", against 908 for the same library on Qobuz, whose search is
+     * plain text.
+     *
+     * So when the filtered query is empty, ask again as free text. THIS DOES
+     * NOT LOOSEN WHAT IS ACCEPTED — matchAlbum still wants a barcode, or
+     * title and artist and the track listing — it only widens what is
+     * CONSIDERED, and an artist that does not agree is still refused. What it
+     * buys even when nothing matches is a usable reason: "the closest that
+     * artist has is X" instead of "nothing called that", and the unmatched
+     * report is the actual deliverable of a migration.
+     *
+     * It costs one extra request only for albums that currently find nothing.
+     *
+     * Kept in step with lib/spotify.js by hand.
+     */
     override fun searchAlbums(title: String, artist: String): List<Album> {
-        val q = "album:${quoteTerm(title)}" +
+        val strict = "album:${quoteTerm(title)}" +
             if (artist.isNotEmpty()) " artist:${quoteTerm(artist)}" else ""
-        return request("GET", "/search", mapOf("q" to q, "type" to "album", "limit" to 12))
+        val found = albumQuery(strict)
+        if (found.isNotEmpty()) return found
+        // Free text, the way Qobuz is asked. Quoting nothing and naming no
+        // field: Spotify's own fuzziness is the point.
+        val loose = listOf(title, artist).filter { it.isNotEmpty() }.joinToString(" ").trim()
+        if (loose.isEmpty() || loose == title.trim()) return found
+        return albumQuery(loose)
+    }
+
+    private fun albumQuery(q: String): List<Album> =
+        request("GET", "/search", mapOf("q" to q, "type" to "album", "limit" to 12))
             ?.objOrNull("albums")?.arrOrNull("items")?.objects()
             ?.mapNotNull { toAlbum(it) }.orEmpty()
-    }
 
     override fun searchArtists(name: String): List<Artist> =
         request("GET", "/search",
