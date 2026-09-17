@@ -232,6 +232,87 @@ class ApiTest {
             listOf(true, false), seen.toList())
     }
 
+    @Test fun `the app is told to protect the process while Roon is pairing`() {
+        // THE 0.2.9 REGRESSION. Roon pairing is the one flow that REQUIRES the
+        // user to leave the app: they have to open Roon, go to Settings ->
+        // Extensions and click Enable, and Roon's authorisation comes back
+        // over the MOO socket this process is holding. Before 0.2.9 the
+        // service was in the foreground for the whole life of the app, so the
+        // process survived that trip. Since 0.2.9 it is only foreground during
+        // a run -- and on Android 12+ a process with no foreground component
+        // is frozen, so the socket stopped being serviced the moment the user
+        // switched to Roon and the pairing never completed. Reported as
+        // "0.3.0 fails to connect to Roon even after enabling again in Roon
+        // extensions".
+        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
+        // A discovery that takes its time, so the run sits in DISCOVERING --
+        // which is exactly the window the user walks away in.
+        val slowDiscovery = object : com.musicd.migrate.roon.RoonDiscovery {
+            override fun discover(
+                timeoutMs: Long, log: (String) -> Unit
+            ): List<com.musicd.migrate.roon.RoonProto.FoundCore> {
+                Thread.sleep(1_500)
+                return emptyList()
+            }
+        }
+        val a = MigrateApi(MemoryStore(), FakeAssets(emptyMap()), FakeHttp(emptyList()),
+            "0.1.0", roonDiscovery = slowDiscovery,
+            onBusyChanged = { seen.add(it) })
+
+        assertEquals("idle: nothing to protect", 0, seen.size)
+        assertEquals(200, post(a, "/api/roon/connect", "{}").status)
+
+        val until = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < until && seen.isEmpty()) Thread.sleep(25)
+        assertEquals("the app is told to hold the process while Roon connects: $seen",
+            listOf(true), seen.toList())
+
+        // And it lets go again once the attempt settles, or the service would
+        // sit in the foreground for ever and walk into the six-hour cap.
+        val until2 = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < until2 && seen.size < 2) Thread.sleep(25)
+        assertEquals("told once at the start and once at the end: $seen",
+            listOf(true, false), seen.toList())
+    }
+
+    @Test fun `the pairing window closes even if Roon never settles`() {
+        // With no Core on the network RoonCore re-discovers every ten seconds
+        // FOR EVER, so keying the protection off the stage alone would hold
+        // the foreground service open indefinitely — accumulating exactly the
+        // dataSync budget whose exhaustion killed 0.2.5. Verified on an
+        // emulator: with no Core present the stage never settles and
+        // isForeground stayed 1 for as long as it was watched.
+        //
+        // So the window is measured from the user ASKING, and it closes.
+        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
+        val foreverDiscovering = object : com.musicd.migrate.roon.RoonDiscovery {
+            override fun discover(
+                timeoutMs: Long, log: (String) -> Unit
+            ): List<com.musicd.migrate.roon.RoonProto.FoundCore> {
+                Thread.sleep(50_000)          // never returns within the test
+                return emptyList()
+            }
+        }
+        val a = MigrateApi(MemoryStore(), FakeAssets(emptyMap()), FakeHttp(emptyList()),
+            "0.1.0", roonDiscovery = foreverDiscovering,
+            onBusyChanged = { seen.add(it) })
+
+        assertEquals(200, post(a, "/api/roon/connect", "{}").status)
+        val until = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < until && seen.isEmpty()) Thread.sleep(25)
+        assertEquals("protected while the user might be in Roon", listOf(true), seen.toList())
+
+        // Wind the clock past the window by backdating the request, then poll
+        // the state the way the page does.
+        val asked = MigrateApi::class.java.getDeclaredField("roonConnectAskedAt")
+        asked.isAccessible = true
+        asked.setLong(a, System.currentTimeMillis() - MigrateApi.ROON_PAIRING_WINDOW_MS - 1_000)
+
+        get(a, "/api/state")
+        assertEquals("the window closed and the process was let go: $seen",
+            listOf(true, false), seen.toList())
+    }
+
     @Test fun `a second migration is refused while one is running, and the app is told once`() {
         // The flag follows the RUN, not the request: a refused start must not
         // report busy again, or the service would re-post its notification.

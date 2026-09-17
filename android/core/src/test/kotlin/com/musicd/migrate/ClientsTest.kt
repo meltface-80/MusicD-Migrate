@@ -357,14 +357,91 @@ class ClientsTest {
         val sp = SpotifyClient(liveSession(), http, sleeper = { slept.add(it) })
 
         sp.me()                      // takes the 429 and sets the hold
-        assertEquals("the backoff was slept once", 1, slept.size)
+        val afterFirst = slept.size
+        assertTrue("the backoff was slept", afterFirst >= 1)
 
         // The SECOND call sees no 429 of its own and must still wait out the
         // hold the first one set. Without the shared hold it sleeps not at all.
+        //
+        // Counted as "more than before" rather than an exact total: a 429 also
+        // turns PACING on, so the second call legitimately sleeps twice — once
+        // on the hold and once on its paced slot. Pinning the total made this
+        // test fail when pacing was added, which is the assertion's fault, not
+        // the behaviour's.
         sp.me()
-        assertEquals("a worker that saw no 429 still waited out the shared hold",
-            2, slept.size)
-        assertTrue("and it waited what was left of it: ${slept[1]}", slept[1] > 0)
+        assertTrue("a worker that saw no 429 still waited out the shared hold: $slept",
+            slept.size > afterFirst)
+        assertTrue("and it waited a real amount: $slept", slept.drop(afterFirst).any { it > 0 })
+    }
+
+    @Test fun `a 429 makes the client ask more slowly from then on`() {
+        // A real 9,635-album Roon library into Spotify: four workers burst
+        // past the rolling window in the first few requests, earn a 429 with
+        // a 20s Retry-After, wait it out, burst again. The page said "rate
+        // limiting this app -- waiting 20s (3 so far)" with the counter still
+        // at zero. Obeying the delay is necessary but not sufficient --
+        // something has to stop us asking too fast.
+        val http = FakeHttp(listOf(
+            FakeHttp.res(429, "", mapOf("retry-after" to "1")),
+            FakeHttp.res(200, """{"id":"me","display_name":"Me"}"""),
+            FakeHttp.res(429, "", mapOf("retry-after" to "1")),
+            FakeHttp.res(200, """{"id":"me","display_name":"Me"}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        assertEquals("a run that has never been throttled is not paced",
+            0L, sp.paceMsForTest())
+
+        sp.me()
+        val first = sp.paceMsForTest()
+        assertTrue("after a 429 it paces itself: $first", first > 0)
+
+        // A second 429 doubles it: the gap that works is unknown and the
+        // Client ID is shared, so it converges rather than guessing.
+        sp.me()
+        assertEquals("and doubles on the next one", first * 2, sp.paceMsForTest())
+    }
+
+    @Test fun `pacing spaces the workers out instead of letting them all fire at once`() {
+        // Claimed under the lock, before the sleep, so four callers take four
+        // DIFFERENT slots. Reading a shared "next" and then sleeping would
+        // give them all the same one, which is the burst this exists to stop.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"id":"me"}""")))
+        val slept = java.util.Collections.synchronizedList(ArrayList<Long>())
+        val sp = SpotifyClient(liveSession(), http, sleeper = { slept.add(it) })
+        sp.setPaceForTest(40L)
+
+        for (i in 0 until 4) sp.me()
+        // The first takes the slot that is already due; the rest each wait one
+        // more gap than the last.
+        assertTrue("the workers were spread out rather than fired together: $slept",
+            slept.count { it > 0 } >= 3)
+    }
+
+    @Test fun `a long clean run eases the pacing back off`() {
+        // One bad patch must not slow the rest of a two-hour migration for
+        // ever.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"id":"me"}""")))
+        val sp = SpotifyClient(liveSession(), http, sleeper = {})
+        sp.setPaceForTest(1_000L)
+
+        for (i in 0 until SpotifyClient.PACE_DECAY_AFTER) sp.me()
+        assertTrue("it eased back: ${sp.paceMsForTest()}", sp.paceMsForTest() < 1_000L)
+    }
+
+    @Test fun `a healthy run is never paced at all`() {
+        // The cost of this has to be zero for everyone who is not being
+        // throttled -- Qobuz, a small library, the tests.
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"id":"me"}""")))
+        val slept = java.util.Collections.synchronizedList(ArrayList<Long>())
+        val sp = SpotifyClient(liveSession(), http, sleeper = { slept.add(it) })
+        for (i in 0 until 20) sp.me()
+        assertEquals(0L, sp.paceMsForTest())
+        assertEquals("nothing was ever slept for pacing", 0, slept.size)
+        // The slot is untouched too, not merely harmless: the `paceMs > 0`
+        // guard is what keeps an unthrottled run out of the pacing path
+        // altogether. Without this the guard is an equivalent mutant — the
+        // slot maths happens to be a no-op at a gap of zero — and the same
+        // assertion is what catches it in test/unit/clients.test.js.
+        assertEquals("no slot was ever claimed", 0L, sp.nextSlotForTest())
     }
 
     @Test fun `a Spotify 401 with no refresh token gives up rather than looping`() {

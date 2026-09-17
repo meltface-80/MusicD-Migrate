@@ -246,6 +246,10 @@ class MigrateApi(
     // ----------------------------------------------------------------- state
 
     private fun state(req: Request): Response {
+        // A backstop. RoonCore's onStage callback is what actually keeps this
+        // current; re-checking on each poll costs nothing (refreshBusy is
+        // edge-triggered) and covers any stage change that never published.
+        refreshBusy()
         val q = qobuzSession()
         val sp = spotifySession()
         val redirect = callbackUrlFrom(req, Pkce.CALLBACK_PATH)
@@ -440,9 +444,61 @@ class MigrateApi(
      */
     @Volatile private var busy = false
 
-    /** Re-read the two flags and tell the app module if that changed. */
+    /**
+     * Whether Roon is mid-connection and the process must not be frozen.
+     *
+     * PAIRING IS THE ONE FLOW THAT REQUIRES THE USER TO LEAVE THE APP: they
+     * have to open Roon, go to Settings → Extensions and click Enable, and
+     * Roon's authorisation comes back over the MOO socket this process is
+     * holding. Before 0.2.9 the service was in the foreground for the whole
+     * life of the app, so the process survived that trip. Since 0.2.9 it is
+     * only foreground during a run — and on Android 12+ a process with no
+     * foreground component is frozen, so the socket stopped being serviced
+     * the moment the user switched to Roon and the pairing never completed.
+     * Reported as "fails to connect to Roon even after enabling again".
+     *
+     * Bounded on purpose: discovering, connecting and awaiting approval are
+     * minutes at the outside, so this cannot walk the service into the
+     * six-hour `dataSync` cap. Once PAIRED the session is expendable — the
+     * token is saved, and pressing the button reconnects.
+     */
+    private fun roonConnecting(): Boolean {
+        // BOUNDED BY A DEADLINE, and that is not belt-and-braces. With no Core
+        // on the network RoonCore re-discovers every ten seconds for ever, so
+        // the stage alone would hold the service in the foreground
+        // indefinitely — accumulating exactly the `dataSync` budget whose
+        // exhaustion killed 0.2.5. Verified on an emulator: with no Core
+        // present the stage never settles and isForeground stayed 1.
+        //
+        // The window is measured from the user ASKING, because what needs
+        // covering is their trip to Roon's Extensions page and back. Five
+        // minutes is generous for that and costs at most five minutes of
+        // budget per press of the button.
+        if (System.currentTimeMillis() - roonConnectAskedAt > ROON_PAIRING_WINDOW_MS) {
+            return false
+        }
+        return when (roon?.status?.stage) {
+            RoonStage.DISCOVERING, RoonStage.CONNECTING, RoonStage.AWAITING_APPROVAL -> true
+            else -> false
+        }
+    }
+
+    /** When the user last asked to connect to Roon. See [roonConnecting]. */
+    @Volatile private var roonConnectAskedAt = 0L
+
+    /**
+     * How long a Roon connection attempt is worth protecting the process for,
+     * measured from the user asking.
+     *
+     * Long enough to open Roon, find Settings → Extensions and click Enable;
+     * short enough that a network with no Core — where discovery retries for
+     * ever — cannot hold the foreground service open and eat the six-hour
+     * `dataSync` budget.
+     */
+
+    /** Re-read the flags and tell the app module if that changed. */
     private fun refreshBusy() {
-        val now = currentJobId != null || roonScanning
+        val now = currentJobId != null || roonScanning || roonConnecting()
         if (now == busy) return
         busy = now
         // A listener that throws must not take the run down with it.
@@ -456,7 +512,10 @@ class MigrateApi(
             val core = RoonCore(
                 memory = StoreRoonMemory(store),
                 discovery = roonDiscovery,
-                extension = RoonExtension(version = version)
+                extension = RoonExtension(version = version),
+                // Every stage change re-decides whether the process needs
+                // protecting. See roonConnecting.
+                onStage = { refreshBusy() }
             )
             roon = core
             return core
@@ -523,6 +582,11 @@ class MigrateApi(
             val core = roonCore()
             if (host.isNotEmpty()) core.connectTo(host, if (port > 0) port else 9330)
             else core.start()
+            // Straight away rather than waiting for the next poll: the user
+            // may switch to Roon within the second. The timestamp opens the
+            // window roonConnecting measures.
+            roonConnectAskedAt = System.currentTimeMillis()
+            refreshBusy()
             ok()
         } catch (e: Exception) {
             Response.json(500, obj("error" to (e.message ?: "Could not start")))
@@ -898,6 +962,9 @@ class MigrateApi(
     }
 
     companion object {
+        /** See the note on MigrateApi.roonConnecting. */
+        const val ROON_PAIRING_WINDOW_MS = 5 * 60 * 1000L
+
         fun ok() = Response.json(200, """{"ok":true}""")
 
         fun obj(vararg pairs: Pair<String, String>): String =

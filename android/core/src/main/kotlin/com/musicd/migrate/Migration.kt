@@ -246,6 +246,21 @@ class Migration(
         }
     }
 
+    /**
+     * On the way out of a run that did not finish: save the rows, and KEEP
+     * WHAT WAS MATCHED.
+     *
+     * A run that stops early — cancelled, a circuit breaker, a dead sign-in,
+     * Android's foreground cap — has already found real matches, and
+     * stranding them is what made a long run into Spotify look as though it
+     * had done nothing at all. An Error gets the same treatment: the write is
+     * a few requests and the alternative is losing hours of matching.
+     */
+    private fun stopping() {
+        flush()
+        runCatching { flushWrites() }
+    }
+
     // --------------------------------------------------------------------- run
 
     fun run(): Map<String, Int> {
@@ -271,18 +286,18 @@ class Migration(
             report(phase = "done", label = "Finished")
             return countsMap()
         } catch (e: Cancelled) {
-            flush()
+            stopping()
             report(phase = "cancelled", label = "Cancelled")
             throw e
         } catch (e: Exception) {
-            flush()
+            stopping()
             report(phase = "failed", label = e.message ?: "Failed")
             throw e
         } catch (t: Throwable) {
             // An Error is not an Exception. Letting one past here would leave
             // the progress saying "matching" forever while the process died
             // under it. The rows recorded so far are flushed either way.
-            flush()
+            stopping()
             report(phase = "failed", label = "the app hit a " + t.javaClass.simpleName)
             throw t
         }
@@ -335,7 +350,7 @@ class Migration(
         report(phase = "matching", step = "tracks", total = src.size, done = 0,
             label = "Favourite tracks — ${src.size} to check")
 
-        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val w = writer("favourite tracks") { target.saveTracks(it) }
         val done = AtomicInteger(0)
         eachWithConcurrency(src) { t, _ ->
             checkCancelled()
@@ -347,7 +362,7 @@ class Migration(
             } else {
                 val r = resolveTrack(t)
                 if (r.id != null) {
-                    toWrite.add(r.id)
+                    w.add(r.id)
                     record(JobItem("track", t.id, label, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
@@ -363,7 +378,7 @@ class Migration(
             report(done = done.incrementAndGet(), label = "Favourite tracks — $label")
         }
 
-        write("favourite tracks", toWrite) { target.saveTracks(it) }
+        w.flush()
     }
 
     // ----------------------------------------------------------- saved albums
@@ -374,7 +389,7 @@ class Migration(
         report(phase = "matching", step = "albums", total = src.size, done = 0,
             label = "Favourite albums — ${src.size} to check")
 
-        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val w = writer("favourite albums") { target.saveAlbums(it) }
         val done = AtomicInteger(0)
         eachWithConcurrency(src) { a, _ ->
             checkCancelled()
@@ -386,7 +401,7 @@ class Migration(
             } else {
                 val r = resolveAlbum(a)
                 if (r.id != null) {
-                    toWrite.add(r.id)
+                    w.add(r.id)
                     record(JobItem("album", a.id, label, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
@@ -408,7 +423,7 @@ class Migration(
             report(done = done.incrementAndGet(), label = "Favourite albums — $label")
         }
 
-        write("favourite albums", toWrite) { target.saveAlbums(it) }
+        w.flush()
     }
 
     // ---------------------------------------------------------------- artists
@@ -419,7 +434,7 @@ class Migration(
         report(phase = "matching", step = "artists", total = src.size, done = 0,
             label = "Artists — ${src.size} to check")
 
-        val toWrite = java.util.Collections.synchronizedList(ArrayList<String>())
+        val w = writer("artists") { target.followArtists(it) }
         val done = AtomicInteger(0)
         eachWithConcurrency(src) { a, _ ->
             checkCancelled()
@@ -428,7 +443,7 @@ class Migration(
             } else {
                 val r = resolveArtist(a)
                 if (r.id != null) {
-                    toWrite.add(r.id)
+                    w.add(r.id)
                     record(JobItem("artist", a.id, a.name, "matched", targetId = r.id,
                         method = r.method, note = r.reason))
                 } else {
@@ -440,7 +455,7 @@ class Migration(
             report(done = done.incrementAndGet(), label = "Artists — ${a.name}")
         }
 
-        write("artists", toWrite) { target.followArtists(it) }
+        w.flush()
     }
 
     // -------------------------------------------------------------- playlists
@@ -857,9 +872,73 @@ class Migration(
 
     // ------------------------------------------------------------------ writing
 
-    private fun write(what: String, ids: List<String>, fn: (List<String>) -> Unit) {
+    /**
+     * Somewhere to put matched ids that writes them AS THEY ACCUMULATE.
+     *
+     * See [WRITE_BATCH] for why this is a correctness fix rather than an
+     * optimisation, and why it costs no extra requests.
+     *
+     * Kept in step with `writer` in lib/migrate.js by hand.
+     */
+    private inner class Writer(
+        private val what: String,
+        private val fn: (List<String>) -> Unit
+    ) {
+        private val held = ArrayList<String>()
+
+        fun add(id: String) {
+            // The batch is taken out UNDER THE LOCK, before the write, so two
+            // workers cannot carry off the same ids.
+            val batch = synchronized(held) {
+                held.add(id)
+                if (held.size < WRITE_BATCH) return
+                ArrayList(held).also { held.clear() }
+            }
+            write(what, batch, fn, quiet = true)
+        }
+
+        fun flush(quiet: Boolean = false) {
+            while (true) {
+                val batch = synchronized(held) {
+                    if (held.isEmpty()) return
+                    val take = minOf(held.size, WRITE_BATCH)
+                    ArrayList(held.subList(0, take)).also {
+                        repeat(take) { _ -> held.removeAt(0) }
+                    }
+                }
+                write(what, batch, fn, quiet)
+            }
+        }
+    }
+
+    private val writers = java.util.Collections.synchronizedList(ArrayList<Writer>())
+
+    private fun writer(what: String, fn: (List<String>) -> Unit): Writer =
+        Writer(what, fn).also { writers.add(it) }
+
+    /**
+     * Write whatever is still held, whatever else has gone wrong.
+     *
+     * Called from the run's catch as well as its happy path: the whole point
+     * is that a run which stops early keeps what it matched. Each writer is
+     * tried even if an earlier one throws, because a failed album write is no
+     * reason to strand the artists too.
+     */
+    private fun flushWrites() {
+        for (w in ArrayList(writers)) {
+            // write() already records a failed row; this guard only stops one
+            // writer's failure from stranding the others.
+            runCatching { w.flush(quiet = true) }
+        }
+    }
+
+    /** @param quiet leave the phase alone — an incremental flush must not
+     *   relabel a matching run as "writing". */
+    private fun write(
+        what: String, ids: List<String>, fn: (List<String>) -> Unit, quiet: Boolean = false
+    ) {
         if (options.dryRun || ids.isEmpty()) return
-        report(phase = "writing", label = "Saving ${ids.size} $what")
+        if (!quiet) report(phase = "writing", label = "Saving ${ids.size} $what")
         try {
             fn(ids)
             counts.getOrPut("written") { AtomicInteger(0) }.addAndGet(ids.size)
@@ -982,6 +1061,24 @@ class Migration(
          * Kept in step with UNREADABLE_LIMIT in lib/migrate.js by hand.
          */
         const val UNREADABLE_LIMIT = 50
+
+        /**
+         * How many matched ids are held before they are written.
+         *
+         * The endpoint maximum on both services for a library write, which is
+         * what makes writing as we go FREE: a flush of fifty makes exactly
+         * the request that batch would have made in one write at the end, and
+         * both clients chunk at the same number.
+         *
+         * Writing only at the end was the bug. A run that was cancelled,
+         * tripped a circuit breaker, hit Android's six-hour foreground cap or
+         * simply had its process killed wrote NOTHING, however many albums it
+         * had matched — and into Spotify a ten thousand album library takes
+         * hours against a rate-limited search, so any interruption in those
+         * hours saved nothing at all. Into Qobuz the phase finished and the
+         * write happened, which is why only one direction looked broken.
+         */
+        const val WRITE_BATCH = 50
 
         /**
          * Run something that talks to a service, treating a failure as "no

@@ -801,6 +801,95 @@ class MigrationTest {
         }
     }
 
+    @Test fun `matches are written DURING the phase, not banked until the end`() {
+        // THE "nothing appeared in Spotify" BUG. write() ran once, after the
+        // whole matching loop, so a run whose process was KILLED -- Android's
+        // six-hour foreground cap, an OOM, a reboot -- wrote nothing at all,
+        // however many albums it had matched. No catch block runs for a killed
+        // process, so the only thing that can save those matches is having
+        // already written them.
+        //
+        // Into Qobuz the phase finishes and the write happens, which is why
+        // that direction looked fine. Into Spotify a 9,635-album library takes
+        // hours against a rate-limited search.
+        val many = (0 until 120).map { i ->
+            alb(id = "qal$i", title = "Record $i", upc = "")
+        }.toMutableList()
+        val source = FakeService("qobuz", libAlbums = many)
+        val target = FakeService("spotify", catalogueAlbums = many.mapIndexed { i, a ->
+            Album("sal$i", "", a.title, listOf("Metallica"), 8)
+        }.toMutableList())
+
+        // Watched from INSIDE the run: what had been written by the time the
+        // hundredth search went out. Asserting after the run cannot tell an
+        // incremental write from one at the end.
+        var writtenMidRun = -1
+        var searches = 0
+        target.onAlbumSearch = {
+            if (++searches == 100) writtenMidRun = target.writtenAlbums.size
+        }
+
+        val r = run(source, target,
+            NOTHING.copy(doAlbums = true, concurrency = 1, corroborate = false))
+        assertEquals(120, r.counts["matched"])
+        assertTrue("a full batch was written while the run was still going, got $writtenMidRun",
+            writtenMidRun >= Migration.WRITE_BATCH)
+        assertEquals("and all of them landed", 120, target.writtenAlbums.size)
+    }
+
+    @Test fun `a run stopped with less than a batch matched still keeps those`() {
+        // The other half, and the one the mid-phase flush cannot cover: five
+        // matches held when the run is cancelled are fewer than a batch, so
+        // only a flush on the way out writes them. 0.3.0's error text already
+        // promised "nothing already matched has been lost" -- this is what
+        // makes that true.
+        val many = (0 until 10).map { i ->
+            alb(id = "qal$i", title = "Record $i", upc = "")
+        }.toMutableList()
+        val source = FakeService("qobuz", libAlbums = many)
+        val target = FakeService("spotify", catalogueAlbums = many.mapIndexed { i, a ->
+            Album("sal$i", "", a.title, listOf("Metallica"), 8)
+        }.toMutableList())
+
+        val store = MemoryStore()
+        store.createJob("job1", "a->b", "{}", false)
+        val m = Migration(source, target, store, "job1",
+            NOTHING.copy(doAlbums = true, concurrency = 1, corroborate = false))
+        var searches = 0
+        target.onAlbumSearch = { if (++searches >= 5) m.cancel() }
+
+        try {
+            m.run()
+            fail("the run should have been cancelled")
+        } catch (e: Cancelled) {
+            // expected
+        }
+        assertTrue("the handful matched before the stop was written, not stranded",
+            target.writtenAlbums.size > 0)
+        assertTrue("and it really did stop early", target.writtenAlbums.size < many.size)
+        assertTrue("fewer than a batch, so only the flush on the way out did it",
+            target.writtenAlbums.size < Migration.WRITE_BATCH)
+    }
+
+    @Test fun `writing in batches costs no more requests than writing once`() {
+        // The reason incremental writing is free: the clients already chunk at
+        // the endpoint maximum, so flushing a full batch makes exactly the
+        // request that batch would have made at the end anyway.
+        val many = (0 until 100).map { i ->
+            alb(id = "qal$i", title = "Record $i", upc = "")
+        }.toMutableList()
+        val source = FakeService("qobuz", libAlbums = many)
+        val target = FakeService("spotify", catalogueAlbums = many.mapIndexed { i, a ->
+            Album("sal$i", "", a.title, listOf("Metallica"), 8)
+        }.toMutableList())
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, corroborate = false))
+        assertEquals(100, r.counts["matched"])
+        assertEquals("every one landed", 100, target.writtenAlbums.size)
+        assertEquals("two batches of fifty, exactly as one final write would have made",
+            2, target.saveAlbumCalls.get())
+    }
+
     @Test fun `one album corroborating disarms that for good`() {
         // The breaker must not fire on a healthy run. Proof that it is armed
         // by "the check has NEVER worked" and not merely by a count of

@@ -46,6 +46,37 @@ class SpotifyClient(
          *  rather than hold a migration open for an hour pretending to work. */
         const val MAX_RETRY_WAIT_MS = 60_000L
 
+        /*
+         * PACING, so a run stops earning 429s in the first place.
+         *
+         * Measured on a real 9,635-album Roon library into Spotify: four
+         * workers burst past Spotify's rolling window within the first few
+         * requests, earn a 429 with a twenty second Retry-After, wait it out,
+         * burst again. The progress counter sat at zero and the page said
+         * "rate limiting this app — waiting 20s (3 so far)". Obeying the delay
+         * is necessary but not sufficient: something has to stop us asking too
+         * fast.
+         *
+         * So after the FIRST 429 the client spaces its requests, and adapts:
+         * double the gap on each further 429, decay back towards none after a
+         * long run of successes. A healthy run is never slowed — the gap
+         * starts at zero and nothing paces until the service complains — so
+         * Qobuz, small libraries and the tests are all untouched.
+         *
+         * The arithmetic is why this is worth it. That library is one search
+         * plus up to two track-listing reads per album, so about 29,000
+         * requests. Paced just under the limit that is a couple of hours and
+         * it finishes; bursting into a 20s wait every few requests, it never
+         * does.
+         *
+         * Kept in step with lib/spotify.js by hand.
+         */
+        const val PACE_START_MS = 250L
+        const val PACE_MAX_MS = 2_000L
+
+        /** Consecutive successes before the gap is eased back. */
+        const val PACE_DECAY_AFTER = 50
+
         /**
          * How many results a `upc:` search may return and still be trusted as
          * a barcode lookup. A barcode identifies one release; a crowd means
@@ -125,6 +156,18 @@ class SpotifyClient(
     /** When every worker may fire again. See the 429 branch in [request]. */
     @Volatile private var holdUntil = 0L
 
+    /** The gap enforced between requests, 0 until the service complains. */
+    @Volatile private var paceMs = 0L
+
+    /** For the tests: the pacing in force, and a way to preset it. Named so
+     *  it is obvious at the call site that nothing in production reads them. */
+    internal fun paceMsForTest(): Long = paceMs
+    internal fun nextSlotForTest(): Long = synchronized(paceLock) { nextSlot }
+    internal fun setPaceForTest(ms: Long) { synchronized(paceLock) { paceMs = ms } }
+    private val paceLock = Any()
+    private var nextSlot = 0L
+    private var sinceThrottle = 0
+
     /**
      * A valid access token, refreshing at most ONCE however many callers ask.
      *
@@ -189,6 +232,20 @@ class SpotifyClient(
             val hold = holdUntil - System.currentTimeMillis()
             if (hold > 0) sleeper(hold)
 
+            // Then take a paced slot. Claimed UNDER THE LOCK, before the
+            // sleep, so four workers get four different slots rather than all
+            // reading the same one. A gap of 0 — a run that has never been
+            // throttled — makes this a no-op.
+            if (paceMs > 0) {
+                val wait = synchronized(paceLock) {
+                    val now = System.currentTimeMillis()
+                    val slot = maxOf(now, nextSlot)
+                    nextSlot = slot + paceMs
+                    slot - now
+                }
+                if (wait > 0) sleeper(wait)
+            }
+
             val token = accessToken()
             val qs = query(params)
             val url = API + path + if (qs.isEmpty()) "" else "?$qs"
@@ -226,6 +283,14 @@ class SpotifyClient(
                 // Set the hold and let the top of the loop do the sleeping.
                 // Sleeping here as well would wait TWICE: once privately and
                 // once on the hold this just set.
+                // Ask more slowly from now on, so this stops happening.
+                // Doubling rather than a fixed step: the gap that works is
+                // unknown and the Client ID is shared, so converge on it
+                // instead of guessing.
+                synchronized(paceLock) {
+                    paceMs = minOf(maxOf(paceMs * 2, PACE_START_MS), PACE_MAX_MS)
+                    sinceThrottle = 0
+                }
                 holdUntil = System.currentTimeMillis() + waitMs
                 onRateLimit(waitMs)
                 continue
@@ -242,6 +307,17 @@ class SpotifyClient(
                     "If this is the first run after an update, sign in to Spotify again — " +
                     "a new permission was added.")
             }
+            // A long run of successes eases the gap back, so one bad patch
+            // does not slow the rest of a two-hour migration for ever.
+            if (paceMs > 0) {
+                synchronized(paceLock) {
+                    if (++sinceThrottle >= PACE_DECAY_AFTER) {
+                        sinceThrottle = 0
+                        paceMs = if (paceMs <= PACE_START_MS) 0L else paceMs * 3 / 4
+                    }
+                }
+            }
+
             if (!res.ok) {
                 throw RuntimeException("Spotify HTTP ${res.status}: ${messageFrom(res.body)}")
             }
