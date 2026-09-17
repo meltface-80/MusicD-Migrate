@@ -621,6 +621,16 @@
         (progress.cacheHits || 0) + " from cache";
       el.appendChild(s);
     }
+    // A run being held by the service stays visible after the label has moved
+    // on to the next album. Without this the only sign was a counter that
+    // crawled, which is what "seems unresponsive" looked like.
+    if (progress && progress.rateLimits) {
+      var w = document.createElement("span");
+      w.className = "pill";
+      w.textContent = progress.rateLimits +
+        (progress.rateLimits === 1 ? " rate-limit wait" : " rate-limit waits");
+      el.appendChild(w);
+    }
   }
 
   function showItems(jobId, status) {

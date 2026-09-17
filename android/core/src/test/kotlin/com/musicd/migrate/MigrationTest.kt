@@ -229,9 +229,26 @@ class MigrationTest {
         target.textSearchFails = { _, artist -> artist == "Band" }
 
         val r = run(source, target, NOTHING.copy(doTracks = true))
-        assertEquals(1, r.counts["unmatched"])
+        // FAILED, not unmatched. The run still finishes and the other track is
+        // still written — what this test has always guarded — but a search that
+        // could not be MADE is not a search that found nothing. Amber says
+        // "your track is not on that service"; red says "we could not look",
+        // and under a rate limit the amber version reported a whole library as
+        // absent. Mirrors the same test in test/unit/migrate.test.js.
+        assertEquals(1, r.counts["failed"])
+        assertNull(r.counts["unmatched"])
         assertEquals(1, r.counts["matched"])
         assertEquals(listOf("s2"), target.writtenTracks)
+
+        val row = r.items.first { it.status == "failed" }
+        assertTrue("the row quotes what the service said: ${row.note}",
+            row.note!!.contains("could not search spotify"))
+
+        // And it is NOT cached, or the refusal would outlive the thing that
+        // caused it and the next run would not even retry.
+        assertNull(r.store.cachedMatch("qobuz", "q1", "spotify", "track"))
+        assertNotNull("but the one that DID resolve is cached as normal",
+            r.store.cachedMatch("qobuz", "q2", "spotify", "track"))
     }
 
     @Test fun `an expired sign-in stops the migration rather than reporting misses`() {
@@ -653,6 +670,135 @@ class MigrationTest {
         assertTrue("and how to carry on without it", message.contains("track listing"))
         assertTrue("it stopped early: ${target.searchCount.get()} searches, not ${many.size}",
             target.searchCount.get() <= Migration.UNREADABLE_LIMIT + 1)
+    }
+
+    @Test fun `a run whose searches never once work stops instead of grinding for days`() {
+        // "Roon to Spotify seems unresponsive", from a real 9,635-album
+        // library. Every search was being rate limited, every one waited out
+        // its backoff and was then recorded as a plain miss, and the progress
+        // counter crawled with nothing on the page to say why. Days to report
+        // a library as absent.
+        //
+        // The same rule as the corroboration breaker above, and deliberately
+        // a SEPARATE pair of counters: a run where searches work and the
+        // listing check is broken must still trip that one.
+        val many = (0 until Migration.UNREADABLE_LIMIT + 20).map { i ->
+            alb(id = "qal$i", title = "Record $i", upc = "")
+        }.toMutableList()
+        val source = FakeService("qobuz", libAlbums = many)
+        val target = FakeService("spotify")
+        target.albumSearchFails = { true }
+
+        val e = try {
+            run(source, target, NOTHING.copy(doAlbums = true, concurrency = 1))
+            fail("the run should have stopped"); null
+        } catch (e: BrokenRead) {
+            e
+        }
+        val message = e?.message.orEmpty()
+        assertTrue("it says what happened: $message",
+            message.contains("searches failed and not one succeeded"))
+        assertTrue("and it quotes what the service actually said",
+            message.contains("rate limiting this app"))
+        assertTrue("because none of them was cached",
+            message.contains("re-running picks up where this left off"))
+    }
+
+    @Test fun `one search working disarms the search breaker for good`() {
+        // Proof the breaker is armed by "no search has EVER worked" and not
+        // merely by a count of failures. MORE than the limit fail here, and
+        // the run still finishes, because the first one answered.
+        val many = mutableListOf(alb(id = "qgood", title = "Reachable", upc = ""))
+        for (i in 0 until Migration.UNREADABLE_LIMIT + 20) {
+            many.add(alb(id = "qal$i", title = "Record $i", upc = ""))
+        }
+        val source = FakeService("qobuz", libAlbums = many)
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sgood", "", "Reachable", listOf("Metallica"), 8)))
+        target.albumSearchFails = { it != "Reachable" }
+
+        val r = run(source, target,
+            NOTHING.copy(doAlbums = true, concurrency = 1, corroborate = false))
+        assertEquals("the one whose search answered", 1, r.counts["matched"])
+        assertEquals("every other search could not be made", many.size - 1,
+            r.counts["failed"])
+        assertTrue("and there are more of them than the limit",
+            (r.counts["failed"] ?: 0) > Migration.UNREADABLE_LIMIT)
+    }
+
+    @Test fun `a search that comes back EMPTY is a miss, not a failure`() {
+        // The distinction the whole change rests on. "We asked and there is
+        // nothing" is a real answer: amber, cached, and not counted against
+        // the breaker. Only "we could not ask" is red.
+        val source = FakeService("qobuz",
+            libAlbums = mutableListOf(alb(id = "qa", upc = "")))
+        val target = FakeService("spotify")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertNull(r.counts["failed"])
+        assertEquals(1, r.counts["unmatched"])
+        assertNotNull("and a real miss IS cached, so the next run does not pay again",
+            r.store.cachedMatch("qobuz", "qa", "spotify", "album"))
+    }
+
+    @Test fun `a failed barcode search does not matter once the title search finds it`() {
+        // The failure only counts if nothing matched in the end. Otherwise a
+        // service with a flaky `upc:` filter would turn every correct match
+        // into a red row.
+        val source = FakeService("qobuz",
+            libAlbums = mutableListOf(alb(id = "qa", upc = "0123456789012")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sa", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        target.upcSearchFails = true
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true, corroborate = false))
+        assertEquals(1, r.counts["matched"])
+        assertNull("the barcode search failing is irrelevant once the title search answered",
+            r.counts["failed"])
+    }
+
+    @Test fun `a service holding the run says so on the page`() {
+        // "Roon to Spotify seems unresponsive." The progress label only
+        // changes when an album FINISHES, so a run whose every search is held
+        // for thirty seconds shows a counter that does not move and no reason
+        // at all. onRateLimit existed on both clients in both languages and
+        // was passed by nothing but the tests -- dead code in production,
+        // which is why a throttled run and a hung one looked identical.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(id = "qa")))
+        val target = FakeService("spotify")
+        val store = MemoryStore()
+        store.createJob("job1", "a->b", "{}", false)
+        val m = Migration(source, target, store, "job1", NOTHING)
+
+        m.noteRateLimit(30_000)
+        val first = store.job("job1")!!.progressJson
+        assertTrue("it names the service and what is happening: $first",
+            first.contains("spotify is rate limiting this app"))
+        assertTrue("and how long", first.contains("waiting 30s"))
+        assertTrue("and how many times", first.contains("1 so far"))
+        assertTrue("and the count is on the progress", first.contains("\"rateLimits\":1"))
+
+        m.noteRateLimit(5_000)
+        val second = store.job("job1")!!.progressJson
+        assertTrue("they add up: $second", second.contains("\"rateLimits\":2"))
+        assertTrue(second.contains("2 so far"))
+    }
+
+    @Test fun `the progress carries the field names the page reads`() {
+        // public/app.js is the authority on every field name, and it reads
+        // progress.searches, progress.cacheHits and progress.rateLimits.
+        // Nothing else checks this: ContractTest catches a renamed ROUTE or
+        // option, not a renamed FIELD, and the Docker half is the one everyone
+        // tests. Mirrored in test/unit/migrate.test.js.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(id = "qa")))
+        val target = FakeService("spotify")
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        val progress = r.store.job("job1")!!.progressJson
+        for (field in listOf("phase", "step", "label", "done", "total", "counts",
+                             "searches", "cacheHits", "rateLimits")) {
+            assertTrue("the page reads progress.$field, and it is missing: $progress",
+                progress.contains("\"$field\":"))
+        }
     }
 
     @Test fun `one album corroborating disarms that for good`() {

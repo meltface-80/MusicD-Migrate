@@ -130,15 +130,23 @@ class MigrateApi(
             .put("name", s.name).toString())
     }
 
+    /**
+     * Told to the live migration so the PAGE can say a service is holding the
+     * run — see Migration.noteRateLimit. Resolved at call time because a
+     * client is built before the Migration that will use it exists.
+     */
+    private fun rateLimited(ms: Long) { current?.noteRateLimit(ms) }
+
     private fun qobuzClient(): QobuzClient? =
-        qobuzSession()?.let { QobuzClient(it, http) }
+        qobuzSession()?.let { QobuzClient(it, http, onRateLimit = { ms -> rateLimited(ms) }) }
 
     private fun spotifyClient(): SpotifyClient? =
         spotifySession()?.let {
             // Persisted on every refresh. Spotify rotates refresh tokens, so a
             // refresh that is not written down can leave the install unable to
             // recover.
-            SpotifyClient(it, http, onTokens = { s -> saveSpotify(s) })
+            SpotifyClient(it, http, onTokens = { s -> saveSpotify(s) },
+                onRateLimit = { ms -> rateLimited(ms) })
         }
 
     // --------------------------------------------------------------- routing

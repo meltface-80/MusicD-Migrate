@@ -100,6 +100,11 @@ open class FakeService(
         // artists at once -- Roon writes them "A/B/C" -- passed every test
         // here while returning nothing at all from Qobuz for 352 albums of a
         // real library.
+        // A search the service REFUSES, which is not a search that came back
+        // empty. Modelled on Spotify's 429 message because that is the one
+        // that mattered: nine thousand albums, every search rate limited, and
+        // the whole library reported as absent.
+        if (albumSearchFails(title)) throw RuntimeException(albumSearchMessage)
         val words = "$title $artist".lowercase()
             .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
         val hits = catalogueAlbums.filter { a ->
@@ -108,6 +113,10 @@ open class FakeService(
         }
         return if (searchAlbumsCarriesUpc) hits else hits.map { it.copy(upc = "") }
     }
+
+    /** Which titles the album search refuses outright, and what it says. */
+    var albumSearchFails: (String) -> Boolean = { false }
+    var albumSearchMessage = "Spotify is rate limiting this app and did not let up."
 
     val upcSearchCount = AtomicInteger(0)
     var upcSearchFails = false

@@ -135,7 +135,9 @@ function clientFor(name) {
 function qobuzClient() {
   const s = store.get("qobuz.session");
   if (!s || !s.token) return null;
-  return new Qobuz(s);
+  return new Qobuz(s, {
+    onRateLimit: (ms) => { if (current) current.noteRateLimit(ms); },
+  });
 }
 
 /**
@@ -157,6 +159,10 @@ function spotifyClient() {
   const clientId = spotifyClientId();
   if (!s || !s.refreshToken || !clientId) return null;
   return new Spotify(Object.assign({}, s, { clientId }), {
+    // Told to the live migration so the PAGE can say a service is holding the
+    // run. Resolved at call time because the client is built before the
+    // Migration exists.
+    onRateLimit: (ms) => { if (current) current.noteRateLimit(ms); },
     // Persisted on every refresh. Spotify rotates refresh tokens, so a refresh
     // that is not written down can leave the install unable to recover.
     onTokens: (tokens) => store.put("spotify.session", {
