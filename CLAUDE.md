@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 230 tests
+npm test                                                  # 233 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 222 tests
+cd android && ./gradlew :core:test                         # 225 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -265,6 +265,29 @@ directory as-is.
   services). A failed batch of fifty is one report row but *fifty* stranded
   items — counting it as one understated the damage by forty-nine, which is a
   bug that shipped here once.
+- **WRITE AS YOU GO. A run that stops early must keep what it matched.**
+  `write()` used to be called once, after the whole matching loop, so a run
+  that was cancelled, tripped a circuit breaker, lost its sign-in, hit
+  Android's six-hour foreground cap or simply had its **process killed** wrote
+  NOTHING — however many albums it had already matched. Into Qobuz the phase
+  finishes and the write happens, which is why only the Spotify directions
+  looked broken; into Spotify a ten thousand album library takes hours against
+  a rate-limited search, and any interruption in those hours saved nothing at
+  all. 0.3.0's own error text promised "nothing already matched has been lost"
+  while that was untrue.
+  `writer()`/`Writer` hold ids and flush at `WRITE_BATCH` (50 — the endpoint
+  maximum, and what both clients already chunk at, so this costs **no extra
+  requests**), and `flushWrites()` runs from the run's catch as well, so the
+  sub-batch remainder is not stranded either. **Both halves are needed and are
+  tested separately**: nothing runs in a catch block when the process is
+  killed, so only an already-issued write survives that — which is why the
+  mid-phase test watches `writtenAlbums` from INSIDE the run rather than
+  asserting after it. Asserting only afterwards let a mutation that removed
+  either half pass, because each covered for the other.
+  The batch is taken out of the held list **synchronously** (a `splice`, or
+  under the lock in Kotlin) BEFORE the write, or two concurrent workers carry
+  off the same ids. An incremental flush passes `quiet` so it does not relabel
+  a matching run as "writing".
 - **Obey 429 with the delay the service asked for.** Spotify sends
   `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
   cascade. Qobuz sends nothing, so it backs off exponentially.

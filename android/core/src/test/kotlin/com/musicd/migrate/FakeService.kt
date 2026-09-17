@@ -104,6 +104,7 @@ open class FakeService(
         // empty. Modelled on Spotify's 429 message because that is the one
         // that mattered: nine thousand albums, every search rate limited, and
         // the whole library reported as absent.
+        onAlbumSearch(title)
         if (albumSearchFails(title)) throw RuntimeException(albumSearchMessage)
         val words = "$title $artist".lowercase()
             .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
@@ -113,6 +114,11 @@ open class FakeService(
         }
         return if (searchAlbumsCarriesUpc) hits else hits.map { it.copy(upc = "") }
     }
+
+    /** Called on every album search, so a test can watch a run from INSIDE
+     *  it — what has been written by the time the hundredth search goes out
+     *  is the only way to tell an incremental write from one at the end. */
+    var onAlbumSearch: (String) -> Unit = { }
 
     /** Which titles the album search refuses outright, and what it says. */
     var albumSearchFails: (String) -> Boolean = { false }
@@ -171,6 +177,13 @@ open class FakeService(
         writtenTracks.addAll(trackIds)
     }
 
-    override fun saveAlbums(albumIds: List<String>) { writtenAlbums.addAll(albumIds) }
+    /** Counted so a test can prove incremental writing costs no extra
+     *  requests: the clients chunk at the endpoint maximum already. */
+    val saveAlbumCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+    override fun saveAlbums(albumIds: List<String>) {
+        saveAlbumCalls.incrementAndGet()
+        writtenAlbums.addAll(albumIds)
+    }
     override fun followArtists(artistIds: List<String>) { writtenArtists.addAll(artistIds) }
 }

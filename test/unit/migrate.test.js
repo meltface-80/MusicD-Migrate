@@ -4,7 +4,8 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { Migration, UNREADABLE_LIMIT, searchArtist } = require("../../lib/migrate");
+const { Migration, UNREADABLE_LIMIT, WRITE_BATCH, searchArtist } =
+  require("../../lib/migrate");
 const storeMod = require("../../lib/store");
 const { SOURCE_METHODS } = require("../../lib/service");
 
@@ -28,6 +29,11 @@ class FakeService {
     this.lib = Object.assign({ tracks: [], albums: [], artists: [], playlists: {} },
       (data && data.lib) || {});
     this.written = { tracks: [], albums: [], artists: [], created: [], added: {} };
+    // Counted so a test can prove incremental writing costs no extra
+    // requests: the clients chunk at the endpoint maximum already.
+    this.saveTrackCalls = 0;
+    this.saveAlbumCalls = 0;
+    this.followCalls = 0;
     this.searchCount = 0;
   }
   async me() { this.meCalls = (this.meCalls || 0) + 1; return { id: this.userId, name: this.name }; }
@@ -100,9 +106,9 @@ class FakeService {
     const found = from.find((a) => a.id === id);
     return (found && found.tracks) || [];
   }
-  async saveTracks(ids) { this.written.tracks.push(...ids); }
-  async saveAlbums(ids) { this.written.albums.push(...ids); }
-  async followArtists(ids) { this.written.artists.push(...ids); }
+  async saveTracks(ids) { this.saveTrackCalls++; this.written.tracks.push(...ids); }
+  async saveAlbums(ids) { this.saveAlbumCalls++; this.written.albums.push(...ids); }
+  async followArtists(ids) { this.followCalls++; this.written.artists.push(...ids); }
   async createPlaylist(name) {
     const id = "new" + (this.written.created.length + 1);
     this.written.created.push({ id, name });
@@ -963,6 +969,98 @@ test("the progress carries the field names the page reads", async () => {
                        "searches", "cacheHits", "rateLimits"]) {
     assert.ok(field in p, "the page reads progress." + field + ", and it is missing");
   }
+});
+
+test("matches are written DURING the phase, not banked until the end", async () => {
+  // THE "nothing appeared in Spotify" BUG. write() ran once, after the whole
+  // matching loop, so a run whose process was KILLED — Android's six-hour
+  // foreground cap, an OOM, a reboot — wrote nothing at all, however many
+  // albums it had matched. No catch block runs for a killed process, so the
+  // only thing that can save those matches is having already written them.
+  //
+  // Into Qobuz the phase finishes and the write happens, which is why that
+  // direction looked fine. Into Spotify a 9,635-album library takes hours
+  // against a rate-limited search.
+  const many = [];
+  for (let i = 0; i < 120; i++) many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = many.map((a, i) => ({ id: "sal" + i, title: a.title,
+    artists: ["Metallica"], upc: "", trackCount: 8 }));
+
+  // Watched from inside the run: what had been written by the time the
+  // hundredth search went out. Asserting after the run cannot tell an
+  // incremental write from one at the end.
+  let writtenMidRun = -1;
+  let searches = 0;
+  const realSearch = target.searchAlbums.bind(target);
+  target.searchAlbums = async (t, a) => {
+    if (++searches === 100) writtenMidRun = target.written.albums.length;
+    return realSearch(t, a);
+  };
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, concurrency: 1, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 120);
+  assert.ok(writtenMidRun >= 50,
+    "a full batch had already been written while the run was still going, got " +
+    writtenMidRun);
+  assert.strictEqual(target.written.albums.length, 120, "and all of them landed");
+});
+
+test("a run stopped with less than a batch matched still keeps those", async () => {
+  // The other half, and the one the mid-phase flush cannot cover: five
+  // matches held when the run is cancelled are fewer than a batch, so only a
+  // flush on the way out writes them. 0.3.0's error text already promised
+  // "nothing already matched has been lost" — this is what makes that true.
+  const many = [];
+  for (let i = 0; i < 10; i++) many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = many.map((a, i) => ({ id: "sal" + i, title: a.title,
+    artists: ["Metallica"], upc: "", trackCount: 8 }));
+
+  const store = tmpStore();
+  store.createJob("job1", "a->b", {}, false);
+  const m = new Migration({ source, target, sourceName: "qobuz",
+    targetName: "spotify", store, jobId: "job1",
+    options: Object.assign({}, NOTHING, { albums: true, concurrency: 1,
+                                          corroborate: false }) });
+  let searches = 0;
+  const realSearch = target.searchAlbums.bind(target);
+  target.searchAlbums = async (t, a) => {
+    if (++searches >= 5) m.cancel();
+    return realSearch(t, a);
+  };
+
+  await assert.rejects(() => m.run(), (e) => e.cancelled === true);
+  assert.ok(target.written.albums.length > 0,
+    "the handful matched before the stop was written, not stranded");
+  assert.ok(target.written.albums.length < many.length, "and it really did stop early");
+  assert.ok(target.written.albums.length < WRITE_BATCH,
+    "fewer than a batch, so only the flush on the way out can have done it");
+});
+
+test("writing in batches costs no more requests than writing once", async () => {
+  // The reason incremental writing is free: the clients already chunk at the
+  // endpoint maximum, so flushing a full batch makes exactly the request that
+  // batch would have made at the end anyway.
+  const many = [];
+  for (let i = 0; i < 100; i++) many.push(album({ id: "qal" + i, title: "Record " + i, upc: "" }));
+  const source = new FakeService("q", { lib: { albums: many } });
+  source.albumDetail = async () => null;
+  const target = new FakeService("s", {});
+  target.catalogueAlbums = many.map((a, i) => ({ id: "sal" + i, title: a.title,
+    artists: ["Metallica"], upc: "", trackCount: 8 }));
+
+  const { result } = await run(source, target,
+    Object.assign({}, NOTHING, { albums: true, corroborate: false }));
+  assert.strictEqual(result.counts.matched, 100);
+  assert.strictEqual(target.written.albums.length, 100, "every one landed");
+  assert.strictEqual(target.saveAlbumCalls, 2,
+    "two batches of fifty, exactly as one final write would have made");
 });
 
 test("a live tag is accepted only when the track listing agrees", async () => {
