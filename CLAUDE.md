@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 233 tests
+npm test                                                  # 235 tests
 npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 225 tests
+cd android && ./gradlew :core:test                         # 230 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -169,6 +169,47 @@ directory as-is.
   holds it, `CHANGE_WIFI_MULTICAST_STATE` is in the manifest, and
   `MigrateApi` takes the discovery as a parameter only so the app can supply
   it — `:core` must not depend on the SDK.
+- **ROON PAIRING IS THE ONE FLOW THAT REQUIRES THE USER TO LEAVE THE APP.**
+  They have to open Roon, go to Settings → Extensions and click Enable, and
+  Roon's authorisation comes back over the MOO socket *this process is
+  holding*. Before 0.2.9 the service was foreground for the whole life of the
+  app so the process survived that trip; once it became foreground only during
+  a run, Android 12+ froze the process the moment the user switched to Roon
+  and the pairing never completed. So `refreshBusy` counts
+  `DISCOVERING`/`CONNECTING`/`AWAITING_APPROVAL` as work to protect, and
+  `RoonCore` takes an `onStage` callback so every transition re-decides it —
+  a poll would miss the instant that matters. Once PAIRED the session is
+  expendable, because the token is saved and the button reconnects.
+  **And the protection is BOUNDED — five minutes from the button press, not
+  "while the stage says so".** With no Core on the network `RoonCore`
+  re-discovers every ten seconds for ever, so keying it off the stage alone
+  held the foreground service open indefinitely and accumulated exactly the
+  `dataSync` budget whose exhaustion killed 0.2.5. An emulator caught that:
+  with no Core present the stage never settles and `isForeground` stayed 1 for
+  as long as it was watched. `ROON_PAIRING_WINDOW_MS` is measured from the
+  user ASKING, because what needs covering is their trip to Roon's Extensions
+  page and back.
+- **"START" MUST BE ABLE TO START A DEAD ATTEMPT OVER.** `RoonCore.start()`
+  returned immediately whenever `running` was set, and NOTHING cleared it but
+  `stop()`, which only the server's own shutdown calls. So the first attempt
+  to be interrupted left the app unable to try again for the life of the
+  process: every later press of "Find my Roon Core" did literally nothing,
+  silently. That is what made the state unrecoverable rather than merely slow,
+  and it is the "even after enabling again" in the report. A LIVE session is
+  still left alone — the approval comes back on that socket and a double tap
+  must not pull it out from under the user — and the test for that asserts on
+  **the socket**, not on a reconnect: the net thread is parked inside
+  `register()` waiting for a reply that never comes, so a queued reconnect is
+  not observable in any window a test can wait for. Asserting the reconnect
+  count let the mutation survive.
+- **`RoonCore.kt` had NO tests, while `lib/roon-core.js` had a full scripted
+  Core from the start.** That asymmetry is why a bug in BOTH halves went
+  unnoticed. `RoonCoreTest.kt` now drives the same connect/register/approve
+  sequence through the socket and discovery seams. Its fake Core — and the
+  JavaScript one — **must be connectable more than once**: neither could be,
+  which is precisely why nothing ever asked them to reconnect and why "press
+  the button again" stayed broken. A fake that cannot do what the real thing
+  does is how a bug hides behind a green suite.
 - **There is no Roon Core in CI, in Docker, or in the container this was
   written in.** So `lib/roon-core.js` takes the socket, the discovery and the
   token store as seams, and the tests drive a scripted Core and assert on the

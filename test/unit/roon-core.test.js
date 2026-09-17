@@ -31,6 +31,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Replies are delivered asynchronously, as a socket's would be: a Core that
  * answered inside `send()` would hide any ordering bug in the session.
  */
+/**
+ * A scripted Roon Core.
+ *
+ * It can be connected to MORE THAN ONCE, and that is not a convenience: the
+ * only reason "press Find my Roon Core again" could be broken for two
+ * releases without a test noticing is that this fake could not reconnect, so
+ * no test ever asked it to. A fake that cannot do what the real thing does is
+ * how a bug hides behind a green suite.
+ */
 function scriptedCore(answer) {
   let handlers = null;
   let closed = null;
@@ -61,10 +70,14 @@ function scriptedCore(answer) {
   return {
     sent,
     url: null,
+    /** How many times something has connected. A retry has to make a new one. */
+    connects: 0,
     get closedWith() { return closed; },
     connect(url, h) {
       handlers = h;
       this.url = url;
+      this.connects++;
+      closed = null;      // a fresh connection is not a closed one
       setImmediate(() => h.onOpen());
       return socket;
     },
@@ -289,6 +302,58 @@ test("a dropped connection is reported and retried with a widening backoff", asy
   assert.match(core.status.detail, /cable/);
   assert.strictEqual(core.isPaired, false);
   assert.deepStrictEqual(delays, [1000]);
+});
+
+test("pressing Find my Roon Core again after a dead attempt really tries again", async () => {
+  // "0.3.0 fails to connect to Roon even after enabling again in Roon
+  // extensions." start() returned immediately whenever `_running` was already
+  // true, and NOTHING cleared that flag but stop(), which only the server's
+  // own shutdown calls. So the first attempt to be interrupted — the process
+  // frozen while the user was in Roon clicking Enable, a Core that went away,
+  // a dropped socket — left the app unable to try again for the rest of its
+  // life. Every later press of the button did literally nothing, silently.
+  const fake = happyCore();
+  const core = coreWith(fake, { store: memoryStore() });
+  core.start();
+  await settle(10);
+  assert.strictEqual(core.isPaired, true);
+
+  // The socket dies with no reconnect pending — `schedule` is a no-op here,
+  // which is the same position a frozen process wakes up in.
+  fake.drop("the process was frozen while you were in Roon");
+  await settle(4);
+  assert.strictEqual(core.isPaired, false);
+
+  const before = fake.connects;
+  core.start();
+  await settle(10);
+  assert.ok(fake.connects > before,
+    "the button opened a new connection: " + before + " -> " + fake.connects);
+  assert.strictEqual(core.isPaired, true, "and it paired again");
+});
+
+test("pressing it while a live pairing waits for approval does not restart it", async () => {
+  // The idempotence worth keeping: a double tap must not tear down a live
+  // socket that is waiting for the user to click Enable in Roon, because the
+  // approval comes back on THAT socket.
+  const opts = { silentRegister: true };
+  const fake = happyCore(opts);
+  const core = coreWith(fake, { store: memoryStore() });
+  core.start();
+  await settle(10);
+  assert.strictEqual(core.status.stage, STAGE.AWAITING_APPROVAL);
+
+  const before = fake.connects;
+  core.start();
+  await settle(6);
+  // The socket ITSELF is the assertion: whether the live socket was closed
+  // under the user is what matters, because Roon's approval comes back on
+  // that socket and nowhere else. Mirrors RoonCoreTest.kt, where a queued
+  // reconnect is not observable at all — the net thread is parked in
+  // register() waiting for a reply that never comes.
+  assert.strictEqual(fake.closedWith, null, "the live pairing socket was left open");
+  assert.strictEqual(fake.connects, before, "and nothing reconnected");
+  assert.strictEqual(core.status.stage, STAGE.AWAITING_APPROVAL);
 });
 
 test("stop() means stop: no reconnect is scheduled", async () => {

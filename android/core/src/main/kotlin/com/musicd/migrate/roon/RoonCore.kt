@@ -382,7 +382,16 @@ class RoonCore(
     private val sockets: RoonSocketFactory = RawWebSocketFactory(),
     private val discovery: RoonDiscovery = SoodDiscovery(),
     private val extension: RoonExtension = RoonExtension(),
-    private val log: (String) -> Unit = {}
+    private val log: (String) -> Unit = {},
+    /**
+     * Told on every stage change.
+     *
+     * Exists so the app module can protect the process while a pairing is in
+     * flight — see MigrateApi.roonConnecting. A callback rather than the page
+     * polling the stage, because the window that matters is the instant the
+     * user switches to Roon to click Enable, and a poll can miss it.
+     */
+    private val onStage: (String) -> Unit = {}
 ) : BrowseApi {
 
     private companion object {
@@ -424,6 +433,8 @@ class RoonCore(
         detail = why
         log("$next: $why")
         if (next == RoonStage.PAIRED || next == RoonStage.ERROR) pairedLatch.get().countDown()
+        // A listener that throws must not take the pairing down with it.
+        runCatching { onStage(next) }
     }
 
     private fun onNet(body: () -> Unit) {
@@ -431,10 +442,33 @@ class RoonCore(
         runCatching { net.execute(body) }
     }
 
-    /** Begin pairing. Idempotent: a second call while running does nothing. */
+    /**
+     * Begin pairing — or start a dead attempt over, which is what the button
+     * means.
+     *
+     * This used to be `if (!running.compareAndSet(false, true)) return`, and
+     * NOTHING cleared `running` but [stop], which only the server's own
+     * shutdown calls. So the first attempt to be interrupted left the app
+     * unable to try again for the rest of its life: every later press of
+     * "Find my Roon Core" did literally nothing, silently. Reported as "fails
+     * to connect to Roon even after enabling again in Roon extensions", and
+     * it is the reason that state was unrecoverable rather than merely slow.
+     *
+     * A LIVE session is still left alone, and that part matters: pairing waits
+     * for the user to click Enable in Roon and the approval comes back on
+     * that very socket, so a double tap must not pull it out from under them.
+     * Anything else — no session, or a closed one — is reconnected.
+     *
+     * Kept in step with start() in lib/roon-core.js by hand.
+     */
     fun start() {
-        if (!running.compareAndSet(false, true)) return
+        val wasRunning = !running.compareAndSet(false, true)
+        if (wasRunning) {
+            if (session.get()?.isOpen == true) return
+            socket.getAndSet(null)?.let { runCatching { it.close("retrying") } }
+        }
         pairedLatch.set(CountDownLatch(1))
+        backoffMs = BACKOFF_START_MS
         onNet { connectOrDiscover() }
     }
 
