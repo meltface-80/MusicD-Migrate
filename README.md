@@ -586,10 +586,13 @@ button and the instructions for registering one.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MusicD Migrate is copyright (c) 2026 Lewis Menzies (Music Duck / MusicD) and is
+released under the MIT License — the full text is in [LICENSE](LICENSE). In
+short: do what you like with it, as long as the copyright notice and the licence
+travel with it. It comes with no warranty.
 
 `lib/qobuz-oauth.js` is ported from
-[MusicD-Remote](https://github.com/meltface-80/MusicD-Remote), and
+[MusicD Remote](https://github.com/meltface-80/MusicD-Remote), and
 `android/core/…/http/HttpServer.kt` is adapted from
-[Android-Random-Remote](https://github.com/meltface-80/Android-Random-Remote) —
-same author, same licence.
+[MusicD Remote Lite](https://github.com/meltface-80/Android-Random-Remote) —
+same copyright holder, same licence.
