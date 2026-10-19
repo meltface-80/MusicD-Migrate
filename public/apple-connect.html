@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Connect Apple Music — MusicD Migrate</title>
+<link rel="icon" href="icons/favicon-64.png" sizes="64x64">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!--
+  WHY THIS IS ITS OWN PAGE.
+
+  Apple has no OAuth redirect. The Music User Token comes from MusicKit JS,
+  running in a browser, after the user allows it in Apple's own window — and
+  this page then hands it to the server. It is a static file in public/ so the
+  Docker build and the APK serve the same bytes, as they do for index.html.
+
+  On Android this page is opened in the REAL BROWSER, never the WebView
+  (MainActivity routes it out): Apple's sign-in is a password typed into a
+  window, and that must not be a window this app controls. The browser reaches
+  the app's loopback server because it is on the same phone.
+-->
+
+<header class="top">
+  <h1>MusicD&nbsp;Migrate</h1>
+  <p class="sub">Connect Apple Music</p>
+</header>
+
+<main>
+  <section class="card">
+    <p class="hint" id="ac-status">Loading Apple's MusicKit…</p>
+    <div class="row">
+      <button class="primary big" id="ac-go" disabled>Continue with Apple Music</button>
+    </div>
+    <p class="hint small">
+      Apple's own window asks you to sign in and to allow access. This app never sees
+      your Apple Account password — only the token Apple hands back.
+    </p>
+  </section>
+</main>
+
+<script src="apple-connect.js"></script>
+</body>
+</html>

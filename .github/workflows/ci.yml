@@ -45,7 +45,7 @@ jobs:
       - name: Lint the page for undefined references
         run: |
           npm install --no-save --silent eslint@9
-          npx eslint --config tools/eslint.config.mjs public/app.js
+          npx eslint --config tools/eslint.config.mjs public/app.js public/apple-connect.js
 
       # The icons are generated, not checked in as art — so the committed PNGs
       # must be what the generator produces. A hand-edited icon would be undone
@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           mkdir -p /tmp/apkweb
-          for f in index.html app.js style.css manifest.json; do
+          for f in index.html app.js style.css manifest.json apple-connect.html apple-connect.js; do
             unzip -p "$apk" "assets/web/$f" > "/tmp/apkweb/$f"
             cmp "/tmp/apkweb/$f" "public/$f" \
               || (echo "::error::assets/web/$f in the APK differs from public/$f" && exit 1)

@@ -129,6 +129,7 @@
     }
     if (sp.clientId) $("spotify-setup").open = false;
 
+    renderApple();
     renderRoon();
 
     $("cache-note").textContent = state.cacheSize
@@ -157,6 +158,10 @@
       var end = ends[i];
       if (end === "qobuz" && !state.qobuz.signedIn) return "Sign in to Qobuz first.";
       if (end === "spotify" && !state.spotify.signedIn) return "Sign in to Spotify first.";
+      if (end === "apple" && !(state.apple && state.apple.signedIn)) {
+        return state.apple && state.apple.keySaved ? "Connect Apple Music first."
+          : "Add your MusicKit key, then connect Apple Music.";
+      }
       if (end === "roon") {
         var r = state.roon || {};
         if (!r.paired) return "Pair with your Roon Core first.";
@@ -166,6 +171,57 @@
     }
     return "";
   }
+
+  // ------------------------------------------------------- Apple Music
+
+  /**
+   * The key is never sent back to the page — only whether one is saved and
+   * the two ids that say which — so the fields show the ids and the key box
+   * stays empty, and says why.
+   */
+  function renderApple() {
+    var a = (state && state.apple) || {};
+    $("apple-dot").className = "dot" + (a.signedIn ? " on" : "");
+    $("apple-who").textContent = a.signedIn ? (a.name || "connected")
+      : (a.keySaved ? "key saved, not connected" : "not set up");
+    $("apple-body").hidden = !!a.signedIn;
+    $("apple-signout").hidden = !a.signedIn;
+    $("apple-forget-key").hidden = !a.keySaved;
+    $("apple-start").disabled = !a.keySaved;
+    if (a.teamId && !$("apple-team").value) $("apple-team").value = a.teamId;
+    if (a.keyId && !$("apple-kid").value) $("apple-kid").value = a.keyId;
+    $("apple-key-note").textContent = a.keySaved
+      ? "A key is saved. Paste one again only to replace it." : "";
+    if (a.keySaved) $("apple-setup").open = false;
+  }
+
+  $("apple-save-key").addEventListener("click", function () {
+    api("/api/apple/key", { method: "POST", body: {
+      teamId: $("apple-team").value.trim(),
+      keyId: $("apple-kid").value.trim(),
+      privateKey: $("apple-p8").value
+    } }).then(function () {
+      // Cleared at once: a private key has no business staying in a text box.
+      $("apple-p8").value = "";
+      toast("Key saved. Now connect Apple Music.");
+    }).then(refresh).catch(fail);
+  });
+  $("apple-forget-key").addEventListener("click", function () {
+    api("/api/apple/key/forget", { method: "POST" })
+      .then(function () { $("apple-team").value = ""; $("apple-kid").value = ""; })
+      .then(refresh).catch(fail);
+  });
+  $("apple-start").addEventListener("click", function () {
+    if (!state || !state.apple || !state.apple.keySaved) {
+      return toast("Save your MusicKit key first.");
+    }
+    // A static page in public/, served by both halves. On Android the app
+    // opens it in the real browser rather than in here — see MainActivity.
+    openAuth("/apple-connect.html");
+  });
+  $("apple-signout").addEventListener("click", function () {
+    api("/api/apple/signout", { method: "POST" }).then(refresh).catch(fail);
+  });
 
   // -------------------------------------------------------------- Roon
 
@@ -376,6 +432,7 @@
   });
 
   function sourceService() { return direction.split("-to-")[0]; }
+  function targetService() { return direction.split("-to-")[1]; }
 
   /**
    * Turn off the kinds the source cannot offer, and say why.
@@ -386,19 +443,31 @@
    */
   function renderKinds() {
     var fromRoon = sourceService() === "roon";
-    var note = $("kinds-note");
-    ["k-playlists", "k-tracks"].forEach(function (id) {
+    var apple = sourceService() === "apple" || targetService() === "apple";
+    var off = { "k-playlists": fromRoon, "k-tracks": fromRoon, "k-artists": apple };
+    Object.keys(off).forEach(function (id) {
       var cb = $(id);
-      cb.disabled = fromRoon;
-      if (fromRoon) cb.checked = false;
-      cb.parentNode.classList.toggle("off", fromRoon);
+      // Remembered while switched off, so passing through an Apple Music
+      // direction does not quietly untick artists for every other one.
+      if (off[id] && !cb.disabled) cb.setAttribute("data-was", cb.checked ? "1" : "");
+      if (!off[id] && cb.disabled) cb.checked = cb.getAttribute("data-was") === "1";
+      cb.disabled = off[id];
+      if (off[id]) cb.checked = false;
+      cb.parentNode.classList.toggle("off", off[id]);
     });
-    note.hidden = !fromRoon;
-    note.textContent = fromRoon
-      ? "Playlists and favourite tracks are not migrated from Roon: a Roon browse row " +
-        "carries no track length, and a title and artist alone are what a cover, a " +
-        "re-recording and a live take all satisfy. Albums and artists are."
-      : "";
+    var notes = [];
+    if (fromRoon) {
+      notes.push("Playlists and favourite tracks are not migrated from Roon: a Roon " +
+        "browse row carries no track length, and a title and artist alone are what a " +
+        "cover, a re-recording and a live take all satisfy. Albums and artists are.");
+    }
+    if (apple) {
+      notes.push("Followed artists do not move to or from Apple Music: its API has no " +
+        "way to follow an artist.");
+    }
+    var note = $("kinds-note");
+    note.hidden = !notes.length;
+    note.textContent = notes.join(" ");
   }
 
   // ---------------------------------------------------------- playlists
@@ -478,7 +547,11 @@
 
       var n = document.createElement("span");
       n.className = "n";
-      n.textContent = p.trackCount + (p.trackCount === 1 ? " track" : " tracks");
+      // Apple Music does not say how long a library playlist is without
+      // reading it, and says null; "0 tracks" would be a wrong number.
+      if (typeof p.trackCount === "number") {
+        n.textContent = p.trackCount + (p.trackCount === 1 ? " track" : " tracks");
+      }
       label.appendChild(n);
 
       list.appendChild(label);
@@ -688,11 +761,13 @@
    * therefore labelled "Spotify → Qobuz" — a wrong label on the one screen
    * that says what a past run did.
    */
+  var SERVICE_NAMES = { apple: "Apple Music" };
+
   function directionLabel(d) {
     var parts = String(d || "").split("-to-");
     if (parts.length !== 2) return String(d || "");
     return parts.map(function (p) {
-      return p.charAt(0).toUpperCase() + p.slice(1);
+      return SERVICE_NAMES[p] || (p.charAt(0).toUpperCase() + p.slice(1));
     }).join(" → ");
   }
 

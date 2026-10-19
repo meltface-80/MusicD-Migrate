@@ -43,7 +43,10 @@ class ContractTest {
         // for that reason is noise rather than a finding.
         assumeTrue("not running from the repository", root != null)
 
-        val appJs = File(root, "public/app.js").readText()
+        // Every script the page bundles, not only app.js: the Apple Music
+        // sign-in page (apple-connect.js) calls routes of its own.
+        val appJs = File(root, "public").listFiles { f -> f.name.endsWith(".js") }!!
+            .sortedBy { it.name }.joinToString("\n") { it.readText() }
         val indexJs = File(root, "index.js").readText()
         val apiKt = File(root, "android/core/src/main/kotlin/com/musicd/migrate/api/" +
             "MigrateApi.kt").readText()
@@ -273,4 +276,23 @@ class ContractTest {
             (ktSource + ktTarget).toSortedSet())
     }
 
+
+    /**
+     * The Apple Music sign-in page must leave the WebView, and MainActivity
+     * decides that by its PATH. :app has no tests, so a rename of the page
+     * would quietly put Apple's password window inside the app — this is the
+     * one check that can see both spellings.
+     */
+    @Test fun `MainActivity sends the page's Apple sign-in to the browser by the page's spelling`() {
+        val root = repoRoot()
+        assumeTrue("not running from the repository", root != null)
+        val appJs = File(root, "public/app.js").readText()
+        val main = File(root, "android/app/src/main/kotlin/com/musicd/migrate/android/" +
+            "MainActivity.kt").readText()
+        val opened = Regex("""openAuth\("(/[a-z-]+\.html)"\)""").find(appJs)?.groupValues?.get(1)
+        assertEquals("/apple-connect.html", opened)
+        assertTrue("public/ has the page", File(root, "public" + opened).isFile)
+        assertTrue("MainActivity routes $opened out of the WebView",
+            main.contains("APPLE_CONNECT_PATH = \"$opened\""))
+    }
 }

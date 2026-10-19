@@ -1229,3 +1229,23 @@ test("a target that cannot even be read from is refused as a source", () => {
   assert.throws(() => build({}, new FakeService("s", {}), { sourceName: "nothing" }),
     /nothing cannot be read from/);
 });
+
+// A TARGET can refuse a kind too. Apple Music has no "follow an artist" in its
+// API at all, so a run INTO it must record that as one skipped row — not match
+// every artist and then fail the write, a red row each about a thing that was
+// never possible, nor quietly report "0 artists".
+test("a kind the TARGET cannot take is skipped with its reason, and never written", async () => {
+  const source = new FakeService("q", { lib: { artists: [{ id: "a1", name: "Band" }] } });
+  const target = new FakeService("apple", {});
+  target.catalogueArtists = [{ id: "x1", name: "Band" }];
+  target.unsupported = { artists: "no way to follow an artist" };
+  const { items } = await run(source, target,
+    Object.assign({}, NOTHING, { artists: true }));
+  assert.strictEqual(target.followCalls, 0, "nothing was written");
+  assert.strictEqual(target.searchCount, 0, "nothing was even searched for");
+  const skipped = items.filter((i) => i.status === "skipped");
+  assert.strictEqual(skipped.length, 1);
+  assert.match(skipped[0].note, /no way to follow/);
+  assert.match(skipped[0].sourceLabel, /^spotify artists$/,
+    "the row names the end that refused — the target here");
+});

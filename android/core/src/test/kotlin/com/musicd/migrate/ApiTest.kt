@@ -595,10 +595,94 @@ class ApiTest {
         assertEquals(200, res.status)
         assertTrue(res.contentType.contains("text/csv"))
         val lines = res.body.toString(Charsets.UTF_8).split("\r\n")
-        assertEquals("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey", lines[0])
-        assertEquals("Miles Davis,Kind Of Blue,5,spAlbum1,,,,ra_one", lines[1])
+        assertEquals("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,apple,appleNote," +
+            "roonKey", lines[0])
+        assertEquals("Miles Davis,Kind Of Blue,5,spAlbum1,,,,,,ra_one", lines[1])
         // A title beginning with "-" is executed as a formula by Excel.
         assertTrue("CSV injection guard: ${lines[2]}", lines[2].startsWith("Someone,'-Minus,"))
         assertTrue(lines[2].contains("track listing does not agree"))
+    }
+
+    // ------------------------------------------------------------ Apple Music
+    //
+    // The same assertions as the Apple Music block of test/unit/server.test.js.
+
+    private val applePem: String by lazy {
+        val kp = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        }.generateKeyPair()
+        "-----BEGIN PRIVATE KEY-----\n" +
+            java.util.Base64.getMimeEncoder().encodeToString(kp.private.encoded) +
+            "\n-----END PRIVATE KEY-----\n"
+    }
+
+    private fun appleKeyBody(pem: String = applePem) = JSONObject()
+        .put("teamId", "abcde12345").put("keyId", "KEY1234567").put("privateKey", pem).toString()
+
+    @Test fun `Apple Music starts not set up, with the fields the page reads`() {
+        val a = get(api(), "/api/state").getJSONObject("apple")
+        assertEquals(false, a.getBoolean("keySaved"))
+        assertEquals(false, a.getBoolean("signedIn"))
+        assertEquals("", a.getString("teamId"))
+        assertEquals("", a.getString("keyId"))
+        assertTrue(a.has("name"))
+    }
+
+    @Test fun `a malformed MusicKit key is refused, naming the field`() {
+        val res = post(api(), "/api/apple/key", appleKeyBody("not a key"))
+        assertEquals(400, res.status)
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("BEGIN PRIVATE KEY"))
+    }
+
+    @Test fun `a saved key is reported by its ids and NEVER sent back`() {
+        val store = MemoryStore()
+        val api = api(store)
+        assertEquals(200, post(api, "/api/apple/key", appleKeyBody()).status)
+        val text = raw(api, "GET", "/api/state").body.toString(Charsets.UTF_8)
+        val a = JSONObject(text).getJSONObject("apple")
+        assertEquals(true, a.getBoolean("keySaved"))
+        assertEquals("ABCDE12345", a.getString("teamId"))
+        assertTrue("the private key must not reach the page", !text.contains("PRIVATE KEY"))
+
+        val tok = get(api, "/api/apple/developer-token")
+        assertTrue(!tok.toString().contains("PRIVATE KEY"))
+        val body = JSONObject(String(java.util.Base64.getUrlDecoder().decode(
+            tok.getString("developerToken").split(".")[1])))
+        assertEquals("ABCDE12345", body.getString("iss"))
+        assertTrue(body.getLong("exp") - body.getLong("iat") <= 3600)
+    }
+
+    @Test fun `the token MusicKit hands back connects Apple Music, and sign-out keeps the key`() {
+        val api = api()
+        assertEquals(400, post(api, "/api/apple/token", """{"userToken":"mut"}""").status)
+        post(api, "/api/apple/key", appleKeyBody())
+        assertEquals(400, post(api, "/api/apple/token", "{}").status)
+        assertEquals(200, post(api, "/api/apple/token", """{"userToken":"mut"}""").status)
+        assertEquals(true, get(api, "/api/state").getJSONObject("apple").getBoolean("signedIn"))
+        post(api, "/api/apple/signout")
+        var a = get(api, "/api/state").getJSONObject("apple")
+        assertEquals(false, a.getBoolean("signedIn"))
+        assertEquals(true, a.getBoolean("keySaved"))
+        post(api, "/api/apple/key/forget")
+        a = get(api, "/api/state").getJSONObject("apple")
+        assertEquals(false, a.getBoolean("keySaved"))
+    }
+
+    @Test fun `every Apple Music direction is one the server knows`() {
+        // An unknown direction silently falls back to qobuz-to-spotify, so a
+        // typo would run the WRONG migration. With Qobuz and Spotify signed in
+        // the only thing left to refuse is the Apple Music end, or Roon.
+        val store = MemoryStore()
+        store.putSetting("qobuz.session", """{"token":"t","userId":"1"}""")
+        store.putSetting("spotify.session", """{"refreshToken":"r"}""")
+        val api = api(store)
+        for (d in listOf("spotify-to-apple", "qobuz-to-apple", "apple-to-spotify",
+                         "apple-to-qobuz", "roon-to-apple")) {
+            val res = post(api, "/api/migrate", """{"direction":"$d","albums":true}""")
+            val msg = JSONObject(res.body.toString(Charsets.UTF_8)).getString("error")
+            assertEquals(400, res.status)
+            assertTrue("$d was refused for: $msg",
+                if (d.startsWith("roon")) msg.contains("Roon") else msg.contains("MusicKit"))
+        }
     }
 }

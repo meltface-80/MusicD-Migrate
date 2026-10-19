@@ -78,6 +78,18 @@ class MainActivity : Activity() {
                     view: WebView, request: WebResourceRequest
                 ): Boolean {
                     val url = request.url
+                    // The one page of OURS that must leave the WebView. Apple
+                    // Music has no redirect: its sign-in runs MusicKit JS on
+                    // this page and opens Apple's own window from it, where
+                    // the user types their Apple Account password — so it
+                    // belongs in the browser for the same two reasons as the
+                    // others. The browser reaches the loopback server because
+                    // it is on the same phone, and 127.0.0.1 is a secure
+                    // context there, which MusicKit wants.
+                    if (isOurs(url) && url.path == APPLE_CONNECT_PATH) {
+                        openExternally(url)
+                        return true
+                    }
                     if (isOurs(url)) return false
                     openExternally(url)
                     return true
@@ -289,6 +301,10 @@ class MainActivity : Activity() {
 
     /** Where the dying process leaves its stack trace for the next launch. */
     private val PENDING_CRASH = "crash-pending.txt"
+
+    /** public/apple-connect.html, which must open in the real browser. The
+     *  page's own spelling, in app.js's openAuth("/apple-connect.html"). */
+    private val APPLE_CONNECT_PATH = "/apple-connect.html"
 
     private fun isOurs(uri: Uri): Boolean =
         uri.scheme == "http" && (uri.host == "127.0.0.1" || uri.host == "localhost")

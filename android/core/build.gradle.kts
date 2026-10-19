@@ -40,8 +40,9 @@ tasks.test {
     // catch would go unchecked in exactly the case that matters: the JS half
     // edited on its own. Declaring them as inputs makes the task rerun.
     val repoRoot = rootProject.projectDir.parentFile
-    for (name in listOf("public/app.js", "index.js", "lib/canon.js", "lib/service.js",
-                        "lib/spotify-pkce.js", "README.md")) {
+    for (name in listOf("public/app.js", "public/apple-connect.js", "index.js",
+                        "lib/canon.js", "lib/service.js", "lib/spotify-pkce.js", "README.md",
+                        "android/app/src/main/kotlin/com/musicd/migrate/android/MainActivity.kt")) {
         val f = File(repoRoot, name)
         if (f.isFile) inputs.file(f).withPropertyName(name.replace('/', '_'))
     }

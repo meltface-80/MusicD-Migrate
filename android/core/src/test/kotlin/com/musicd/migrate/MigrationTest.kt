@@ -1020,4 +1020,22 @@ class MigrationTest {
         assertEquals("no barcode, no match under strict", 1, r.counts["unmatched"])
     }
 
+
+    @Test fun `a kind the TARGET cannot take is skipped with its reason, and never written`() {
+        // Apple Music has no "follow an artist" at all. The twin of the test
+        // of the same name in test/unit/migrate.test.js.
+        val source = FakeService("qobuz", libArtists = mutableListOf(Artist("a1", "Band")))
+        val target = object : FakeService("apple",
+            catalogueArtists = mutableListOf(Artist("x1", "Band"))) {
+            override val unsupported = mapOf("artists" to "no way to follow an artist")
+        }
+        val r = run(source, target, NOTHING.copy(doArtists = true))
+        assertEquals(emptyList<String>(), target.writtenArtists.toList())
+        assertEquals(0, target.searchCount.get())
+        val skipped = r.items.filter { it.status == "skipped" }
+        assertEquals(1, skipped.size)
+        assertTrue(skipped[0].note!!.contains("no way to follow"))
+        assertEquals("the row names the end that refused", "apple artists",
+            skipped[0].sourceLabel)
+    }
 }

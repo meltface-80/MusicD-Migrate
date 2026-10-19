@@ -240,7 +240,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
 button.big { padding: 12px 22px; font-size: 1.03rem; }
 button.ghost { background: transparent; color: var(--ink-dim); }
 
-input[type="text"], input[type="email"], input[type="password"], select {
+input[type="text"], input[type="email"], input[type="password"], select, textarea {
   font: inherit;
   padding: 9px 11px;
   border-radius: 9px;
@@ -250,6 +250,10 @@ input[type="text"], input[type="email"], input[type="password"], select {
   min-width: 0;
   flex: 1 1 200px;
 }
+
+/* The .p8 key: a PEM block, so monospace and the whole row. */
+textarea { flex: 1 1 100%; font-family: ui-monospace, Menlo, Consolas, monospace;
+           font-size: .82rem; resize: vertical; }
 
 .hint { color: var(--ink-dim); font-size: .9rem; margin: 6px 0; }
 .hint.small { font-size: .82rem; }

@@ -698,8 +698,13 @@ class Migration(
      * row in the report the user actually reads.
      */
     private fun refuseUnsupported(kind: String, rowKind: String): Boolean {
-        val why = source.unsupported[kind] ?: return false
-        record(JobItem(rowKind, "-", "$sourceName $kind", "skipped", note = why))
+        // The TARGET is asked too: Apple Music cannot follow an artist at all,
+        // and without this the artist phase would match every artist and then
+        // fail the write, a red row each about a thing that was never possible.
+        val fromSource = source.unsupported[kind]
+        val why = fromSource ?: target.unsupported[kind] ?: return false
+        val who = if (fromSource != null) sourceName else targetName
+        record(JobItem(rowKind, "-", "$who $kind", "skipped", note = why))
         return true
     }
 

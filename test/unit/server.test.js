@@ -302,11 +302,110 @@ test("the library CSV carries the albums and what each was matched to", async ()
   const lines = (await res.text()).split("\r\n");
 
   assert.strictEqual(lines[0],
-    "artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey");
-  assert.match(lines[1], /^Miles Davis,Kind Of Blue,5,spAlbum1,,,,ra_one$/);
+    "artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,apple,appleNote,roonKey");
+  assert.match(lines[1], /^Miles Davis,Kind Of Blue,5,spAlbum1,,,,,,ra_one$/);
   // A title beginning with "-" is executed as a formula by Excel and Sheets.
   assert.match(lines[2], /^Someone,'-Minus,,,/);
   assert.match(lines[2], /track listing does not agree/);
 
   store.clearRoonAlbums("roon");
+});
+
+// ------------------------------------------------------------ Apple Music
+
+const crypto = require("node:crypto");
+const APPLE_PEM = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+  .privateKey.export({ type: "pkcs8", format: "pem" });
+const postJson = (route, body) => fetch(base() + route, withPin({
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(body || {}),
+}));
+
+test("Apple Music starts not set up, and a run into it says what is missing", async () => {
+  const j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.deepStrictEqual(j.apple,
+    { keySaved: false, teamId: "", keyId: "", signedIn: false, name: "" });
+  const res = await postJson("/api/migrate", { direction: "spotify-to-apple", albums: true });
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /Sign in to Spotify|MusicKit key/);
+});
+
+test("a malformed MusicKit key is refused, naming the field", async () => {
+  const res = await postJson("/api/apple/key",
+    { teamId: "ABCDE12345", keyId: "KEY1234567", privateKey: "not a key" });
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /BEGIN PRIVATE KEY/);
+});
+
+test("a saved key is reported by its ids and NEVER sent back", async () => {
+  const res = await postJson("/api/apple/key",
+    { teamId: "abcde12345", keyId: "KEY1234567", privateKey: APPLE_PEM });
+  assert.strictEqual(res.status, 200);
+  const text = await (await fetch(base() + "/api/state", withPin())).text();
+  const j = JSON.parse(text);
+  assert.strictEqual(j.apple.keySaved, true);
+  assert.strictEqual(j.apple.teamId, "ABCDE12345");
+  assert.strictEqual(j.apple.signedIn, false);
+  assert.ok(!text.includes("PRIVATE KEY"), "the private key must not reach the page");
+});
+
+test("the sign-in page gets a short-lived developer token, not the key", async () => {
+  const res = await fetch(base() + "/api/apple/developer-token", withPin());
+  assert.strictEqual(res.status, 200);
+  const text = await res.text();
+  assert.ok(!text.includes("PRIVATE KEY"));
+  const body = JSON.parse(Buffer.from(JSON.parse(text).developerToken.split(".")[1],
+    "base64url"));
+  assert.strictEqual(body.iss, "ABCDE12345");
+  assert.ok(body.exp - body.iat <= 3600, "an hour at most for a token handed to a browser");
+  assert.strictEqual((await fetch(base() + "/api/apple/developer-token")).status, 401,
+    "and it is behind the PIN like everything else");
+});
+
+test("the Apple sign-in page is served, behind the PIN", async () => {
+  assert.strictEqual((await fetch(base() + "/apple-connect.html")).status, 401);
+  const res = await fetch(base() + "/apple-connect.html?pin=1234");
+  assert.strictEqual(res.status, 200);
+  assert.match(await res.text(), /apple-connect\.js/);
+});
+
+test("the token MusicKit hands back connects Apple Music; sign-out keeps the key", async () => {
+  assert.strictEqual((await postJson("/api/apple/token", {})).status, 400);
+  assert.strictEqual((await postJson("/api/apple/token", { userToken: "mut" })).status, 200);
+  let j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.strictEqual(j.apple.signedIn, true);
+  // Past the sign-in check now: the run is refused for the OTHER end.
+  const res = await postJson("/api/migrate", { direction: "spotify-to-apple", albums: true });
+  assert.match((await res.json()).error, /Sign in to Spotify/);
+
+  await postJson("/api/apple/signout");
+  j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.strictEqual(j.apple.signedIn, false);
+  assert.strictEqual(j.apple.keySaved, true);
+
+  await postJson("/api/apple/key/forget");
+  j = await (await fetch(base() + "/api/state", withPin())).json();
+  assert.strictEqual(j.apple.keySaved, false);
+});
+
+test("every Apple Music direction is one the server knows", async () => {
+  // An unknown direction silently falls back to qobuz-to-spotify, so a typo
+  // here would run the WRONG migration rather than fail. With Qobuz and
+  // Spotify "signed in" (no request is made before the refusal), the only
+  // thing left to refuse each of these is the Apple Music end — or Roon.
+  store.put("qobuz.session", { token: "t", userId: "1" });
+  store.put("spotify.session", { refreshToken: "r" });
+  try {
+    for (const d of ["spotify-to-apple", "qobuz-to-apple", "apple-to-spotify",
+                     "apple-to-qobuz", "roon-to-apple"]) {
+      const res = await postJson("/api/migrate", { direction: d, albums: true });
+      const msg = (await res.json()).error;
+      assert.strictEqual(res.status, 400);
+      assert.ok(d.startsWith("roon") ? /Roon/.test(msg) : /MusicKit/.test(msg),
+        d + " was refused for: " + msg);
+    }
+  } finally {
+    store.del("qobuz.session");
+    store.del("spotify.session");
+  }
 });

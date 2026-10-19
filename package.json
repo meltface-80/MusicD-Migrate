@@ -1,7 +1,7 @@
 {
   "name": "musicd-migrate",
-  "version": "0.3.4",
-  "description": "Migrate playlists, albums, artists and tracks between Qobuz and Spotify, in either direction.",
+  "version": "0.4.0",
+  "description": "Migrate playlists, albums, artists and tracks between Qobuz, Spotify and Apple Music, in any direction.",
   "license": "MIT",
   "author": "Lewis Menzies (Music Duck / MusicD)",
   "homepage": "https://github.com/meltface-80/MusicD-Migrate",

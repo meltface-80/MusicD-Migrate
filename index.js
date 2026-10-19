@@ -28,6 +28,8 @@ const QobuzOAuth = require("./lib/qobuz-oauth");
 const PKCE = require("./lib/spotify-pkce");
 const { Qobuz } = require("./lib/qobuz");
 const { Spotify, exchangeCode } = require("./lib/spotify");
+const AppleMusicMod = require("./lib/apple-music");
+const { AppleMusic } = AppleMusicMod;
 const { Migration } = require("./lib/migrate");
 const { RoonCore, STAGE: ROON_STAGE } = require("./lib/roon-core");
 const { RoonClient } = require("./lib/roon");
@@ -100,6 +102,11 @@ const DIRECTIONS = {
   "spotify-to-qobuz": ["spotify", "qobuz"],
   "roon-to-spotify": ["roon", "spotify"],
   "roon-to-qobuz": ["roon", "qobuz"],
+  "qobuz-to-apple": ["qobuz", "apple"],
+  "spotify-to-apple": ["spotify", "apple"],
+  "apple-to-qobuz": ["apple", "qobuz"],
+  "apple-to-spotify": ["apple", "spotify"],
+  "roon-to-apple": ["roon", "apple"],
 };
 
 /**
@@ -118,6 +125,12 @@ function clientFor(name) {
   if (name === "spotify") {
     const c = spotifyClient();
     if (!c) throw new Error("Sign in to Spotify first.");
+    return c;
+  }
+  if (name === "apple") {
+    const c = appleClient();
+    if (!c) throw new Error(store.get("apple.key") ? "Connect Apple Music first."
+      : "Add your MusicKit key, then connect Apple Music.");
     return c;
   }
   if (name === "roon") {
@@ -169,6 +182,20 @@ function spotifyClient() {
       accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt, userId: tokens.userId || "",
     }),
+  });
+}
+
+/**
+ * Apple Music: the user's own MusicKit key, and the Music User Token MusicKit
+ * JS handed back. Both are needed for every request, so neither alone is a
+ * client. See lib/apple-music.js for whose each one is.
+ */
+function appleClient() {
+  const key = store.get("apple.key");
+  const s = store.get("apple.session");
+  if (!key || !s || !s.userToken) return null;
+  return new AppleMusic(Object.assign({}, key, s), {
+    onRateLimit: (ms) => { if (current) current.noteRateLimit(ms); },
   });
 }
 
@@ -232,6 +259,22 @@ function roonState() {
 
 // ------------------------------------------------------------------ state
 
+/**
+ * What the page shows for Apple Music. The key itself NEVER leaves the
+ * server: only whether one is saved, and the two ids that say which.
+ */
+function appleState() {
+  const key = store.get("apple.key");
+  const s = store.get("apple.session");
+  return {
+    keySaved: !!key,
+    teamId: (key && key.teamId) || "",
+    keyId: (key && key.keyId) || "",
+    signedIn: !!(key && s && s.userToken),
+    name: "",
+  };
+}
+
 app.get("/api/state", async (req, res) => {
   const q = store.get("qobuz.session");
   const sp = store.get("spotify.session");
@@ -245,6 +288,7 @@ app.get("/api/state", async (req, res) => {
       redirectUri: PKCE.callbackUrlFrom(req),
       redirectCheck: PKCE.checkRedirectUri(PKCE.callbackUrlFrom(req)),
     },
+    apple: appleState(),
     roon: roonState(),
     cacheSize: store.matchCacheSize(),
     job: current ? { id: current.jobId, running: true } : null,
@@ -338,15 +382,17 @@ app.get("/api/roon/library.csv", (req, res) => {
   if (!rows.length) return res.status(404).send("No Roon library has been scanned yet.");
 
   const header = ["artist", "album", "tracks", "spotify", "spotifyNote",
-                  "qobuz", "qobuzNote", "roonKey"];
+                  "qobuz", "qobuzNote", "apple", "appleNote", "roonKey"];
   const lines = [header.join(",")];
   for (const r of rows) {
     const sp = store.cachedMatch("roon", r.albumKey, "spotify", "album");
     const qz = store.cachedMatch("roon", r.albumKey, "qobuz", "album");
+    const am = store.cachedMatch("roon", r.albumKey, "apple", "album");
     lines.push([
       r.artist, r.title, r.trackCount == null ? "" : r.trackCount,
       (sp && sp.toId) || "", (sp && !sp.toId && sp.method) || "",
       (qz && qz.toId) || "", (qz && !qz.toId && qz.method) || "",
+      (am && am.toId) || "", (am && !am.toId && am.method) || "",
       r.albumKey,
     ].map(csvCell).join(","));
   }
@@ -541,6 +587,68 @@ app.post("/api/spotify/signout", (req, res) => {
   res.json({ ok: true });
 });
 
+// --------------------------------------------------------- Apple Music auth
+
+/**
+ * Save the user's MusicKit key. Checked by actually signing with it, so a
+ * key that cannot sign is refused here rather than as a 401 mid-run.
+ */
+app.post("/api/apple/key", (req, res) => {
+  let key;
+  try {
+    key = AppleMusicMod.checkKey(req.body || {});
+    AppleMusicMod.developerToken(key);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  store.put("apple.key", key);
+  // A new key may belong to a different team; a user token minted against
+  // the old one is not worth keeping.
+  store.del("apple.session");
+  res.json({ ok: true });
+});
+
+app.post("/api/apple/key/forget", (req, res) => {
+  store.del("apple.key");
+  store.del("apple.session");
+  res.json({ ok: true });
+});
+
+/**
+ * A developer token for MusicKit JS on public/apple-connect.html.
+ *
+ * Short-lived on purpose: it is handed to a browser, and a token that leaks
+ * from a tab is then worth an hour. The private key itself is never sent.
+ */
+app.get("/api/apple/developer-token", (req, res) => {
+  const key = store.get("apple.key");
+  if (!key) return res.status(400).json({ error: "Add your MusicKit key first." });
+  try {
+    const { token } = AppleMusicMod.developerToken(key, undefined, AppleMusicMod.BROWSER_TOKEN_TTL_S);
+    res.json({ developerToken: token, version: require("./package.json").version });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** What MusicKit JS handed back once the user allowed it. */
+app.post("/api/apple/token", (req, res) => {
+  const userToken = String((req.body && req.body.userToken) || "").trim();
+  if (!userToken) return res.status(400).json({ error: "Apple Music sent no sign-in token." });
+  const key = store.get("apple.key");
+  if (!key) return res.status(400).json({ error: "Add your MusicKit key first." });
+  // Saved as it is. Nothing is asked of Apple here: the storefront every
+  // catalogue path needs is looked up at the start of each run, and a check
+  // that failed here would throw away a sign-in Apple has just granted.
+  store.put("apple.session", { userToken });
+  res.json({ ok: true });
+});
+
+app.post("/api/apple/signout", (req, res) => {
+  store.del("apple.session");
+  res.json({ ok: true });
+});
+
 // -------------------------------------------------------------- the library
 
 /** The source's playlists, so the user can choose which to bring over. */
@@ -553,7 +661,8 @@ app.get("/api/playlists", async (req, res) => {
     // carries no length to match on. See lib/roon.js.
     return res.status(400).json({ error: new RoonClient({}).unsupported.playlists });
   }
-  const client = which === "qobuz" ? qobuzClient() : which === "spotify" ? spotifyClient() : null;
+  const client = which === "qobuz" ? qobuzClient() : which === "spotify" ? spotifyClient()
+    : which === "apple" ? appleClient() : null;
   if (!client) return res.status(400).json({ error: "Not signed in to " + which + "." });
   try {
     if (!client.userId) await client.me();

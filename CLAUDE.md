@@ -15,10 +15,10 @@ Run all of these before pushing. None is optional, and none needs a Qobuz or
 Spotify account.
 
 ```bash
-npm test                                                  # 242 tests
-npx eslint --config tools/eslint.config.mjs public/app.js  # no-undef is the point
+npm test                                                  # 271 tests
+npx eslint --config tools/eslint.config.mjs public/*.js    # no-undef is the point
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                         # 237 tests
+cd android && ./gradlew :core:test                         # 265 tests
 ```
 
 The APK needs an Android SDK (platform 36, build-tools 36) and JDK 17:
@@ -605,6 +605,40 @@ directory as-is.
   service with `startService`, never `startForegroundService`: the latter
   demands a `startForeground` within five seconds and there is nothing to
   protect yet.
+- **APPLE MUSIC TAKES THE USER'S OWN PRIVATE KEY, AND IT NEVER LEAVES THE
+  SERVER.** Every request needs a developer token — an ES256 JWT signed with a
+  MusicKit `.p8` key from a paid Apple Developer account — so the user pastes
+  Team ID, Key ID and key, and `lib/apple-music.js` / `AppleMusicClient.kt`
+  sign tokens on demand. Unlike Spotify's Client ID it CANNOT be baked in: it
+  is a private key, not a public identifier. `/api/state` reports only
+  `keySaved`, `teamId` and `keyId`; the sign-in page gets a ONE-HOUR token from
+  `/api/apple/developer-token`. Both suites assert the key text never appears
+  in either answer — keep them.
+  **The signature is raw r‖s, not DER.** Node needs `dsaEncoding:
+  "ieee-p1363"`; the JVM produces DER and `derToRaw` converts it. Get it wrong
+  and Apple answers 401, which reads exactly like a wrong key.
+- **Apple Music has no OAuth redirect.** The Music User Token comes from
+  MusicKit JS in a browser, on `public/apple-connect.html`, which posts it to
+  `/api/apple/token`. It is a STATIC page so both halves serve the same bytes,
+  and ContractTest reads every `public/*.js` for routes, not just `app.js`. On
+  Android `MainActivity` sends that one loopback path to the real browser
+  (`APPLE_CONNECT_PATH`, pinned to the page's spelling by ContractTest),
+  because Apple's sign-in is a password typed into a window. MusicKit wants a
+  secure context: 127.0.0.1 is one, a plain-http LAN address is not, and the
+  page says so rather than hanging. No real MusicKit and no real Apple request
+  has been made from here — the sandbox cannot reach Apple — so say that
+  whenever Apple Music is handed over.
+- **Apple library ids are not catalogue ids.** `i.…`, `l.…` and `p.…` are the
+  user's library; writes and searches use catalogue ids. Every read asks for
+  `include=catalog` and reports the CATALOGUE id (and its ISRC / barcode)
+  wherever there is one, or the target's playlist read would never match a
+  search result and "add only what is missing" would add everything again.
+  Apple's `next` link drops the query, so the pager puts `include` back on
+  every page — without that the ISRCs vanish after page one.
+- **A TARGET can refuse a kind, not only a source.** Apple Music cannot follow
+  an artist, so `refuseUnsupported` asks the target too and records one
+  skipped row naming the end that refused. `followArtists` on the Apple client
+  THROWS rather than doing nothing: a silent no-op would report artists moved.
 - **A Qobuz `user_auth_token` belongs to the app that minted it.** The `app_id`
   and the token move together; presenting a mismatched pair is a 401 that reads
   exactly like an expired sign-in.

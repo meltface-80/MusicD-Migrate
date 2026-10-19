@@ -42,7 +42,9 @@ data class Playlist(
     val description: String = "",
     val isPublic: Boolean = false,
     val ownerId: String = "",
-    val trackCount: Int = 0
+    /** Null when the service does not say without reading the playlist —
+     *  Apple Music — so the page shows nothing rather than "0 tracks". */
+    val trackCount: Int? = 0
 )
 
 data class Account(val id: String, val name: String)

@@ -1,8 +1,8 @@
 # MusicD Migrate
 
 Move playlists, favourite albums, followed artists and favourite tracks
-**between Qobuz and Spotify, in either direction** — and find the albums in
-your **Roon** library on either of them.
+**between Qobuz, Spotify and Apple Music, in any direction** — and find the
+albums in your **Roon** library on any of them.
 
 Two ways to run it, one codebase:
 
@@ -24,7 +24,8 @@ APK against `public/` and fails if they differ.
 **Qobuz has no public API.** This app uses the same unofficial one that every
 open-source Qobuz client and the Lyrion/LMS "Qobuz" plugin use. That is
 **against Qobuz's terms of service**, it can stop working without notice, and
-you use it at your own risk. The Spotify side is the official Web API.
+you use it at your own risk. The Spotify and Apple Music sides are
+the official APIs.
 
 **It writes to your library.** Playlists get created, albums and artists get
 favourited. Everything it does is additive — it never deletes or unfollows
@@ -42,13 +43,25 @@ first**, which is the default.
 | **Followed artists** | Matched on an exact name. |
 | **Favourite tracks** | Matched by ISRC, then by title, artist and duration. |
 
-Both directions. The same code runs either way — the two service clients
+Every direction. The same code runs either way — the service clients
 implement one interface, so "Qobuz → Spotify" and "Spotify → Qobuz" are the
 same migration with the source and destination swapped.
+
+**Apple Music** has two differences worth knowing before a run. Its API has
+**no way to follow an artist**, so followed artists never move to or from it —
+the run records that as one skipped row rather than reporting nothing. And it
+has **no separate "liked songs"**: an Apple Music library *is* the collection
+of tracks, so "favourite tracks" means the songs in your library — including
+every song of every album in it, which is more than a Spotify user expects —
+and moving tracks into it adds them to the library.
 
 ### What does *not* move
 
 * **Tracks and playlists, when the source is Roon.** Deliberately — see below.
+* **Followed artists, to or from Apple Music.** Its API cannot follow anyone.
+* **Music videos in an Apple Music playlist.** Reported as skipped, by name.
+* **Songs you uploaded to Apple Music yourself** have no catalogue entry and
+  no ISRC, so they are matched on title, artist and length like anything else.
 * **Play counts, dates added, playlist artwork and playlist descriptions.**
   Neither API offers a way to set most of these.
 * **Local files in a Spotify playlist.** They exist only on that machine.
@@ -420,6 +433,39 @@ Two ways through:
 **On the phone this never comes up** — the APK's server *is* on loopback, which
 is the one address Spotify accepts over plain http.
 
+### Apple Music — you need your own MusicKit key
+
+Apple signs every request to its API with a **developer token**, and that
+token is signed with a **private key** from an **Apple Developer account**
+(the Apple Developer Program has a yearly fee). Spotify's Client ID could be
+built in because a Client ID is public by design; a private key is not, so
+there is no built-in one here and there never will be. Your key stays on your
+server or phone, signs short-lived tokens, and is never sent to the page.
+
+1. On [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list/musicId),
+   under **Identifiers**, add a **Media ID** with MusicKit ticked.
+2. Under **Keys**, create a key with **Media Services (MusicKit…)** ticked and
+   that Media ID chosen. Download the **.p8** file — Apple lets you do that once.
+3. In the app, paste the **Team ID** (top right of the developer site, under
+   your name), the **Key ID** and the whole of the .p8 file, and press **Save
+   key**.
+4. Press **Connect Apple Music**. Apple's own window asks you to sign in and to
+   allow access; the token it hands back is saved. It lasts about six months,
+   and a run that finds it expired stops and says to connect again.
+
+On the **phone**, step 4 opens in your browser rather than the app — Apple's
+sign-in is a password typed into a window, and that must not be a window this
+app controls.
+
+**In Docker**, Apple's MusicKit may refuse to run on a page served over plain
+http from a network address (that is not a "secure context"). If the connect
+page says so, open the app at `http://localhost:3380` on the machine itself (an
+SSH tunnel will do) or put it behind HTTPS, connect once, and use it from
+anywhere afterwards.
+
+Anyone who can read this app's data can use the key, so revoke it on Apple's
+site when you are finished migrating.
+
 ---
 
 ## Running it twice is fine
@@ -478,6 +524,7 @@ device is not something anyone asked for when they signed in on this phone.
  │ lib/  ── the decisions │              │ :core ── the same decisions  │
  │   canon.js  match.js   │   ⟷ same ⟷   │   Canon.kt  Match.kt         │
  │   spotify.js qobuz.js  │    rules     │   SpotifyClient QobuzClient  │
+ │   apple-music.js       │              │   AppleMusicClient           │
  │   migrate.js store.js  │              │   Migration.kt  Store.kt     │
  └──────────┬─────────────┘              └───────────────┬──────────────┘
             │                                            │
@@ -497,9 +544,9 @@ container" is something that fails a build rather than something to hope for.
 ## Verification
 
 ```bash
-npm test                                   # 188 tests: units + the API over a socket
-npx eslint --config tools/eslint.config.mjs public/app.js
-cd android && ./gradlew :core:test         # 175 tests, the JS suite translated
+npm test                                   # 271 tests: units + the API over a socket
+npx eslint --config tools/eslint.config.mjs public/*.js
+cd android && ./gradlew :core:test         # 265 tests, the JS suite translated
 ```
 
 No suite needs a Qobuz account, a Spotify account or a Roon Core: the service
@@ -507,12 +554,15 @@ clients are driven by a fake HTTP layer, the migration engine by fake services
 implementing the same interface, and the Roon client by a scripted browse tree
 behind an injectable socket.
 
-Five checks in `ContractTest` exist to stop the two halves drifting, because
+Six checks in `ContractTest` exist to stop the two halves drifting, because
 `public/app.js` is written once and shipped to both — so a mismatch breaks the
 APK and *nothing in the Docker build would notice*. They read the real source
 files and fail when:
 
-* a route the page calls is missing from `index.js` **or** `MigrateApi.kt`;
+* a route the page calls — from any script in `public/` — is missing from
+  `index.js` **or** `MigrateApi.kt`;
+* the page opens the Apple Music sign-in by a path `MainActivity` does not send
+  to the browser;
 * an option the page sends is never read by one of the two servers;
 * the edition-word lists in `lib/canon.js` and `Canon.kt` disagree;
 * the read/write method lists in `lib/service.js` and `Model.kt` disagree;
@@ -533,6 +583,16 @@ against a real Core, the codecs are tested exhaustively, discovery runs over a
 real UDP socket against a fake Core on loopback, and the transport runs over a
 real WebSocket against a hand-rolled RFC 6455 server — but the first genuine
 pairing will be yours.
+
+**No Apple Music account has ever been contacted either.** There is no Apple
+Developer account in CI or where this was written, and the sandbox cannot reach
+Apple's servers. The clients follow Apple's published documentation and are
+tested against scripted responses in that shape; the token is checked to be an
+ES256 JWT that verifies against the key; and the sign-in page has been driven
+end to end in a real browser with a stand-in for MusicKit JS. But the first
+real request to Apple — and the first real MusicKit sign-in — will be yours,
+and a field Apple names differently from its documentation will show up there
+first.
 
 `MainActivity` and `MigrateService` — the WebView, the foreground service and
 the multicast lock — have nothing but the compiler behind them. There are no

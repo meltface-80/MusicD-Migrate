@@ -24,8 +24,8 @@
 
 <header class="top">
   <h1>MusicD&nbsp;Migrate</h1>
-  <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify —
-    or find your Roon library on either of them.</p>
+  <p class="sub">Move playlists, albums, artists and tracks between Qobuz, Spotify and
+    Apple Music — or find your Roon library on any of them.</p>
 </header>
 
 <main id="main" hidden>
@@ -150,6 +150,66 @@
       </div>
     </div>
 
+    <div class="svc" id="svc-apple">
+      <div class="svc-head">
+        <span class="dot" id="apple-dot"></span>
+        <strong>Apple Music</strong>
+        <span class="who" id="apple-who"></span>
+        <button class="ghost" id="apple-signout" hidden>Sign out</button>
+      </div>
+      <div class="svc-body" id="apple-body">
+        <!-- Open until a key is saved, for the same reason Spotify's is: it
+             is the one thing a first-time user has to read. -->
+        <details id="apple-setup" open>
+          <summary>What do I need?</summary>
+          <p class="hint">
+            <b>An Apple Developer account and a MusicKit key of your own.</b> Apple's
+            API needs every request signed with a private key, and a private key cannot
+            be built into an app the way Spotify's Client ID is — so there is no
+            shortcut here. The Apple Developer Program costs a yearly fee.
+          </p>
+          <ol class="steps">
+            <li>On <a href="https://developer.apple.com/account/resources/identifiers/list/musicId"
+                 target="_blank" rel="noopener">developer.apple.com</a>, under
+              <b>Identifiers</b>, add a <b>Media ID</b> with MusicKit ticked.</li>
+            <li>Under <b>Keys</b>, create a key with <b>Media Services (MusicKit…)</b>
+              ticked and that Media ID chosen, and download the <b>.p8</b> file. Apple
+              lets you download it once.</li>
+            <li>Paste the <b>Team ID</b> (top right, under your name), the key's
+              <b>Key ID</b>, and the whole of the .p8 file below.</li>
+          </ol>
+          <p class="hint">
+            The key stays on <b>this</b> server or phone and is only used to sign
+            requests; it is never sent to the page or to anyone but Apple. Anyone with
+            access to this app's data could use it, so revoke it on Apple's site when
+            you are done.
+          </p>
+        </details>
+        <div class="row" id="apple-key-row">
+          <input type="text" id="apple-team" placeholder="Team ID" spellcheck="false"
+                 autocomplete="off" maxlength="10">
+          <input type="text" id="apple-kid" placeholder="Key ID" spellcheck="false"
+                 autocomplete="off" maxlength="10">
+        </div>
+        <div class="row" id="apple-key-row2">
+          <textarea id="apple-p8" rows="4" spellcheck="false" autocomplete="off"
+                    placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+        </div>
+        <div class="row">
+          <button id="apple-save-key">Save key</button>
+          <button class="ghost" id="apple-forget-key" hidden>Forget the key</button>
+          <span class="hint" id="apple-key-note"></span>
+        </div>
+        <div class="row">
+          <button class="primary" id="apple-start">Connect Apple Music</button>
+        </div>
+        <p class="hint">
+          Opens Apple's own sign-in in your browser. <b>No artists:</b> Apple Music has no
+          way to follow an artist, so that is the one thing that never moves to or from it.
+        </p>
+      </div>
+    </div>
+
     <div class="svc" id="svc-roon">
       <div class="svc-head">
         <span class="dot" id="roon-dot"></span>
@@ -214,6 +274,16 @@
         Roon <span aria-hidden="true">→</span> Spotify</button>
       <button class="dir" id="dir-r2q" data-dir="roon-to-qobuz">
         Roon <span aria-hidden="true">→</span> Qobuz</button>
+      <button class="dir" id="dir-s2a" data-dir="spotify-to-apple">
+        Spotify <span aria-hidden="true">→</span> Apple Music</button>
+      <button class="dir" id="dir-q2a" data-dir="qobuz-to-apple">
+        Qobuz <span aria-hidden="true">→</span> Apple Music</button>
+      <button class="dir" id="dir-a2s" data-dir="apple-to-spotify">
+        Apple Music <span aria-hidden="true">→</span> Spotify</button>
+      <button class="dir" id="dir-a2q" data-dir="apple-to-qobuz">
+        Apple Music <span aria-hidden="true">→</span> Qobuz</button>
+      <button class="dir" id="dir-r2a" data-dir="roon-to-apple">
+        Roon <span aria-hidden="true">→</span> Apple Music</button>
     </div>
 
     <div class="kinds">
@@ -323,7 +393,7 @@
     <p class="hint small">
       Qobuz has no public API. This app uses the same unofficial one every open-source
       Qobuz client uses, which is against Qobuz's terms of service and can stop working
-      without notice. The Spotify side is the official Web API.
+      without notice. The Spotify and Apple Music sides are the official APIs.
     </p>
   </footer>
 </main>

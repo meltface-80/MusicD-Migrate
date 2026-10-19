@@ -137,6 +137,29 @@ class MigrateApi(
      */
     private fun rateLimited(ms: Long) { current?.noteRateLimit(ms) }
 
+    /**
+     * Apple Music: the user's own MusicKit key, and the Music User Token
+     * MusicKit JS handed back. Both are needed for every request, so neither
+     * alone is a client. See AppleMusicClient for whose each one is.
+     */
+    private fun appleKey(): AppleMusicKey? {
+        val j = parseObject(store.setting("apple.key") ?: return null) ?: return null
+        val pem = j.strOrNull("privateKey") ?: return null
+        return AppleMusicKey(j.str("teamId"), j.str("keyId"), pem)
+    }
+
+    private fun appleUserToken(): String? {
+        val raw = store.setting("apple.session") ?: return null
+        return parseObject(raw)?.strOrNull("userToken")
+    }
+
+    private fun appleClient(): AppleMusicClient? {
+        val key = appleKey() ?: return null
+        val token = appleUserToken() ?: return null
+        return AppleMusicClient(AppleMusicSession(key, token), http,
+            onRateLimit = { ms -> rateLimited(ms) })
+    }
+
     private fun qobuzClient(): QobuzClient? =
         qobuzSession()?.let { QobuzClient(it, http, onRateLimit = { ms -> rateLimited(ms) }) }
 
@@ -186,6 +209,18 @@ class MigrateApi(
                 store.deleteSetting("spotify.session")
                 store.deleteSetting("spotify.pending")
                 ok()
+            }
+
+            p == "/api/apple/key" && req.method == "POST" -> appleSaveKey(req)
+            p == "/api/apple/key/forget" && req.method == "POST" -> {
+                store.deleteSetting("apple.key")
+                store.deleteSetting("apple.session")
+                ok()
+            }
+            p == "/api/apple/developer-token" -> appleDeveloperToken()
+            p == "/api/apple/token" && req.method == "POST" -> appleSaveToken(req)
+            p == "/api/apple/signout" && req.method == "POST" -> {
+                store.deleteSetting("apple.session"); ok()
             }
 
             p == "/api/roon/connect" && req.method == "POST" -> roonConnect(req)
@@ -265,6 +300,7 @@ class MigrateApi(
             append(",\"redirectUri\":").append(jsonQuote(redirect))
             append(",\"redirectCheck\":{\"ok\":").append(check.ok)
             append(",\"reason\":").append(jsonQuote(check.reason)).append("}},")
+            append("\"apple\":").append(appleStateJson()).append(",")
             append("\"roon\":").append(roonStateJson()).append(",")
             append("\"cacheSize\":").append(store.matchCacheSize()).append(",")
             append("\"job\":")
@@ -421,6 +457,62 @@ class MigrateApi(
         val client = SpotifyClient(tokens, http, onTokens = { s -> saveSpotify(s) })
         runCatching { client.me() }
         saveSpotify(tokens)
+    }
+
+    // --------------------------------------------------------- Apple Music
+
+    /**
+     * What the page shows for Apple Music. The key itself NEVER leaves this
+     * process: only whether one is saved, and the two ids that say which.
+     */
+    private fun appleStateJson(): String {
+        val key = appleKey()
+        return "{\"keySaved\":" + (key != null) +
+            ",\"teamId\":" + jsonQuote(key?.teamId.orEmpty()) +
+            ",\"keyId\":" + jsonQuote(key?.keyId.orEmpty()) +
+            ",\"signedIn\":" + (key != null && appleUserToken() != null) +
+            ",\"name\":\"\"}"
+    }
+
+    /** Save the user's MusicKit key, checked by actually signing with it. */
+    private fun appleSaveKey(req: Request): Response {
+        val b = parseObject(req.bodyText) ?: JSONObject()
+        val key = try {
+            AppleMusicKey.parse(b.str("teamId"), b.str("keyId"), b.str("privateKey")).also {
+                AppleMusicClient.developerToken(it, System.currentTimeMillis() / 1000)
+            }
+        } catch (e: Exception) {
+            return Response.json(400, obj("error" to (e.message ?: "That key cannot be used.")))
+        }
+        store.putSetting("apple.key", JSONObject().put("teamId", key.teamId)
+            .put("keyId", key.keyId).put("privateKey", key.privateKey).toString())
+        // A new key may belong to a different team; a user token minted
+        // against the old one is not worth keeping.
+        store.deleteSetting("apple.session")
+        return ok()
+    }
+
+    /** A short-lived developer token for MusicKit JS on apple-connect.html. */
+    private fun appleDeveloperToken(): Response {
+        val key = appleKey()
+            ?: return Response.json(400, obj("error" to "Add your MusicKit key first."))
+        val token = AppleMusicClient.developerToken(key, System.currentTimeMillis() / 1000,
+            AppleMusicClient.BROWSER_TOKEN_TTL_S)
+        return Response.json(200, obj("developerToken" to token, "version" to version))
+    }
+
+    /** What MusicKit JS handed back once the user allowed it. Saved as it is:
+     *  nothing is asked of Apple here, exactly as in index.js. */
+    private fun appleSaveToken(req: Request): Response {
+        val token = parseObject(req.bodyText)?.str("userToken").orEmpty().trim()
+        if (token.isEmpty()) {
+            return Response.json(400, obj("error" to "Apple Music sent no sign-in token."))
+        }
+        if (appleKey() == null) {
+            return Response.json(400, obj("error" to "Add your MusicKit key first."))
+        }
+        store.putSetting("apple.session", JSONObject().put("userToken", token).toString())
+        return ok()
     }
 
     // ---------------------------------------------------------------- Roon
@@ -656,14 +748,17 @@ class MigrateApi(
         if (rows.isEmpty()) {
             return Response.text(404, "No Roon library has been scanned yet.")
         }
-        val out = StringBuilder("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey")
+        val out = StringBuilder(
+            "artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,apple,appleNote,roonKey")
         for (r in rows) {
             val sp = store.cachedMatch("roon", r.albumKey, "spotify", "album")
             val qz = store.cachedMatch("roon", r.albumKey, "qobuz", "album")
+            val am = store.cachedMatch("roon", r.albumKey, "apple", "album")
             out.append("\r\n").append(listOf(
                 r.artist, r.title, r.trackCount?.toString().orEmpty(),
                 sp?.toId.orEmpty(), if (sp != null && sp.toId == null) sp.method else "",
                 qz?.toId.orEmpty(), if (qz != null && qz.toId == null) qz.method else "",
+                am?.toId.orEmpty(), if (am != null && am.toId == null) am.method else "",
                 r.albumKey
             ).joinToString(",") { csvCell(it) })
         }
@@ -687,7 +782,12 @@ class MigrateApi(
         "qobuz-to-spotify" to ("qobuz" to "spotify"),
         "spotify-to-qobuz" to ("spotify" to "qobuz"),
         "roon-to-spotify" to ("roon" to "spotify"),
-        "roon-to-qobuz" to ("roon" to "qobuz")
+        "roon-to-qobuz" to ("roon" to "qobuz"),
+        "qobuz-to-apple" to ("qobuz" to "apple"),
+        "spotify-to-apple" to ("spotify" to "apple"),
+        "apple-to-qobuz" to ("apple" to "qobuz"),
+        "apple-to-spotify" to ("apple" to "spotify"),
+        "roon-to-apple" to ("roon" to "apple")
     )
 
     /**
@@ -711,6 +811,9 @@ class MigrateApi(
     private fun targetFor(name: String): MusicTarget = when (name) {
         "qobuz" -> qobuzClient() ?: throw RuntimeException("Sign in to Qobuz first.")
         "spotify" -> spotifyClient() ?: throw RuntimeException("Sign in to Spotify first.")
+        "apple" -> appleClient() ?: throw RuntimeException(
+            if (appleKey() != null) "Connect Apple Music first."
+            else "Add your MusicKit key, then connect Apple Music.")
         else -> throw RuntimeException("Unknown service: $name")
     }
 
@@ -725,6 +828,7 @@ class MigrateApi(
         val client: MusicTarget? = when (which) {
             "qobuz" -> qobuzClient()
             "spotify" -> spotifyClient()
+            "apple" -> appleClient()
             else -> null
         } ?: return Response.json(400, obj("error" to "Not signed in to $which."))
 
