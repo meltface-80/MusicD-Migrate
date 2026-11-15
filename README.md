@@ -170,7 +170,7 @@ it contains all of it — and the report says which edition you got.
 
 ## Install
 
-**Download: [`dist/musicd-migrate-0.3.4.apk`](dist/musicd-migrate-0.3.4.apk)**
+**Download: [`dist/mandarin-migration-0.4.0.apk`](dist/mandarin-migration-0.4.0.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
@@ -228,8 +228,7 @@ Android will refuse to install it over the copy already on the phone — that is
 the whole reason this is a stored secret rather than a key made per run.
 
 (The key that signed MusicD Migrate up to 0.3.4 was not kept, which is why
-0.4.0 needs the old app uninstalled once. `dist/musicd-migrate-0.3.4.apk`,
-while it is still there, is signed with that old key.)
+0.4.0 needs the old app uninstalled once.)
 
 To let CI do the publishing, add the keystore as two repository secrets under
 **Settings → Secrets and variables → Actions**:
@@ -288,7 +287,7 @@ fails if a build is ever signed with anything else. It was produced with:
 
 ```bash
 apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk \
-  | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' > tools/release-key.sha256
+  | sed -n -E 's/^.*Signer.*certificate SHA-256 digest: *//p' | head -1 > tools/release-key.sha256
 ```
 
 If the file is ever removed the key is simply not pinned, and the job says so in
