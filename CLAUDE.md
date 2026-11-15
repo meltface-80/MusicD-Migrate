@@ -3,8 +3,12 @@
 Mandarin Migration (formerly MusicD Migrate) is an **Android app only**. There
 is no Node server and no Docker build any more, and no Roon support: those were
 removed in 0.4.0 at the owner's request. The Android package id stays
-`com.musicd.migrate` on purpose, so the new version installs over the old one
-and keeps people's sign-ins — do not change it.
+`com.musicd.migrate` — do not change it.
+
+0.4.0 is also signed with a NEW key, `CN=Mandarin Migration`, made at the
+owner's request because the original keystore was not kept. So 0.4.0 does
+not install over MusicD Migrate (uninstall once, sign in again); every update
+after it does, as long as the key never changes again.
 
 ## The rule
 
@@ -716,7 +720,8 @@ they were taken once and are ours now. Fix them here.
   platform and the build-tools and nothing else.
 - The signing keystore is private key material. It lives in CI secrets. Do not
   commit it, and do not change the key: an APK signed with a different one
-  cannot install over the existing app. The secrets keep their `MUSICD_*`
+  cannot install over the existing app. (It was changed once, in 0.4.0, only
+  because the original was lost — and that cost every user a reinstall.) The secrets keep their `MUSICD_*`
   names and the key its `musicd` alias through the rename — renaming them
   would stop CI publishing.
 - Ask before guessing when a choice is the user's to make. A destructive
