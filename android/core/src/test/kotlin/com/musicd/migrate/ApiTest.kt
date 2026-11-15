@@ -14,47 +14,17 @@ import org.junit.Test
 /**
  * Drives the APK's route table the way the bundled page drives it.
  *
- * The point is not that these routes exist — it is that they answer the SAME
- * SHAPES index.js answers, because public/app.js is written once and shipped
- * to both. test/unit/server.test.js asserts the same things on the Node side.
+ * The point is not that these routes exist — it is that they answer the
+ * SHAPES public/app.js reads, field for field.
  */
-class ApiTest {
-
-    private class FakeAssets(val files: Map<String, String>) : Assets {
-        override fun read(path: String): ByteArray? = files[path]?.toByteArray()
-    }
-
-    private fun api(store: Store = MemoryStore(), http: Http = FakeHttp(emptyList())) =
-        MigrateApi(store, FakeAssets(mapOf(
-            "web/index.html" to "<!doctype html><title>MusicD Migrate</title>",
-            "web/app.js" to "console.log(1)")), http, "0.1.0")
-
-    private fun get(api: MigrateApi, path: String): JSONObject {
-        val q = if (path.contains("?")) path.substringAfter("?") else ""
-        val res = api.handle(Request("GET", path.substringBefore("?"),
-            com.musicd.migrate.http.HttpServer.parseQuery(q),
-            mapOf("host" to "127.0.0.1:3380"), ByteArray(0), false, "127.0.0.1", path))
-        return JSONObject(res.body.toString(Charsets.UTF_8))
-    }
-
-    private fun post(api: MigrateApi, path: String, body: String = "{}"):
-        com.musicd.migrate.http.Response =
-        api.handle(Request("POST", path, emptyMap(), mapOf("host" to "127.0.0.1:3380"),
-            body.toByteArray(), false, "127.0.0.1", path))
-
-    private fun raw(api: MigrateApi, method: String, path: String) =
-        api.handle(Request(method, path.substringBefore("?"),
-            com.musicd.migrate.http.HttpServer.parseQuery(
-                if (path.contains("?")) path.substringAfter("?") else ""),
-            mapOf("host" to "127.0.0.1:3380"), ByteArray(0), false, "127.0.0.1", path))
+class ApiTest : ApiFixtures() {
 
     // ------------------------------------------------------------------------
 
     @Test fun `state carries every field the bundled page reads`() {
         val j = get(api(), "/api/state")
-        // Each of these is read by name in public/app.js. A rename on one side
-        // breaks the APK and nothing in the Docker build would notice.
-        assertTrue(j.has("pinRequired"))
+        // Each of these is read by name in public/app.js. A rename here breaks
+        // the page, and nothing else would notice.
         assertTrue(j.has("cacheSize"))
         assertTrue(j.has("version"))
         assertTrue(j.has("job"))
@@ -153,7 +123,11 @@ class ApiTest {
         assertEquals(200, res.status)
         assertTrue(res.contentType.startsWith("text/csv"))
         val lines = res.body.toString(Charsets.UTF_8).split("\r\n")
-        assertEquals("kind,playlist,item,status,method,note,targetId", lines[0])
+        assertEquals("kind,playlist,item,status,method,note,targetId,id", lines[0])
+        assertTrue("each row ends with the item's own id: ${lines[2]}", lines[2].endsWith(",2"))
+        assertTrue("named after the run, not the old app",
+            res.headers["Content-Disposition"].orEmpty()
+                .contains("mandarin-qobuz-to-spotify-csvjob.csv"))
         assertTrue("a quote is doubled and the cell quoted",
             lines[1].contains("\"My \"\"Best\"\" Mix\""))
         assertTrue("a comma forces quoting", lines[1].contains("\"Song, with a comma\""))
@@ -188,17 +162,6 @@ class ApiTest {
      * which is all this needs: the point is the START and the END, not the
      * work in between.
      */
-    private fun signedIn(): MemoryStore {
-        val store = MemoryStore()
-        store.putSetting("qobuz.session", JSONObject()
-            .put("token", "t").put("userId", "u").put("appId", "a")
-            .put("name", "Me").toString())
-        store.putSetting("spotify.session", JSONObject()
-            .put("accessToken", "at").put("refreshToken", "rt")
-            .put("expiresAt", System.currentTimeMillis() + 600_000)
-            .put("userId", "me").put("name", "Me").toString())
-        return store
-    }
 
     @Test fun `the app is told when there is work to protect, and when there is not`() {
         // Android 14 caps a dataSync foreground service at SIX HOURS in any
@@ -229,87 +192,6 @@ class ApiTest {
                store.job(jobId)?.status == "running") Thread.sleep(50)
 
         assertEquals("told exactly once at the start and once at the end: $seen",
-            listOf(true, false), seen.toList())
-    }
-
-    @Test fun `the app is told to protect the process while Roon is pairing`() {
-        // THE 0.2.9 REGRESSION. Roon pairing is the one flow that REQUIRES the
-        // user to leave the app: they have to open Roon, go to Settings ->
-        // Extensions and click Enable, and Roon's authorisation comes back
-        // over the MOO socket this process is holding. Before 0.2.9 the
-        // service was in the foreground for the whole life of the app, so the
-        // process survived that trip. Since 0.2.9 it is only foreground during
-        // a run -- and on Android 12+ a process with no foreground component
-        // is frozen, so the socket stopped being serviced the moment the user
-        // switched to Roon and the pairing never completed. Reported as
-        // "0.3.0 fails to connect to Roon even after enabling again in Roon
-        // extensions".
-        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
-        // A discovery that takes its time, so the run sits in DISCOVERING --
-        // which is exactly the window the user walks away in.
-        val slowDiscovery = object : com.musicd.migrate.roon.RoonDiscovery {
-            override fun discover(
-                timeoutMs: Long, log: (String) -> Unit
-            ): List<com.musicd.migrate.roon.RoonProto.FoundCore> {
-                Thread.sleep(1_500)
-                return emptyList()
-            }
-        }
-        val a = MigrateApi(MemoryStore(), FakeAssets(emptyMap()), FakeHttp(emptyList()),
-            "0.1.0", roonDiscovery = slowDiscovery,
-            onBusyChanged = { seen.add(it) })
-
-        assertEquals("idle: nothing to protect", 0, seen.size)
-        assertEquals(200, post(a, "/api/roon/connect", "{}").status)
-
-        val until = System.currentTimeMillis() + 5_000
-        while (System.currentTimeMillis() < until && seen.isEmpty()) Thread.sleep(25)
-        assertEquals("the app is told to hold the process while Roon connects: $seen",
-            listOf(true), seen.toList())
-
-        // And it lets go again once the attempt settles, or the service would
-        // sit in the foreground for ever and walk into the six-hour cap.
-        val until2 = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < until2 && seen.size < 2) Thread.sleep(25)
-        assertEquals("told once at the start and once at the end: $seen",
-            listOf(true, false), seen.toList())
-    }
-
-    @Test fun `the pairing window closes even if Roon never settles`() {
-        // With no Core on the network RoonCore re-discovers every ten seconds
-        // FOR EVER, so keying the protection off the stage alone would hold
-        // the foreground service open indefinitely — accumulating exactly the
-        // dataSync budget whose exhaustion killed 0.2.5. Verified on an
-        // emulator: with no Core present the stage never settles and
-        // isForeground stayed 1 for as long as it was watched.
-        //
-        // So the window is measured from the user ASKING, and it closes.
-        val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
-        val foreverDiscovering = object : com.musicd.migrate.roon.RoonDiscovery {
-            override fun discover(
-                timeoutMs: Long, log: (String) -> Unit
-            ): List<com.musicd.migrate.roon.RoonProto.FoundCore> {
-                Thread.sleep(50_000)          // never returns within the test
-                return emptyList()
-            }
-        }
-        val a = MigrateApi(MemoryStore(), FakeAssets(emptyMap()), FakeHttp(emptyList()),
-            "0.1.0", roonDiscovery = foreverDiscovering,
-            onBusyChanged = { seen.add(it) })
-
-        assertEquals(200, post(a, "/api/roon/connect", "{}").status)
-        val until = System.currentTimeMillis() + 5_000
-        while (System.currentTimeMillis() < until && seen.isEmpty()) Thread.sleep(25)
-        assertEquals("protected while the user might be in Roon", listOf(true), seen.toList())
-
-        // Wind the clock past the window by backdating the request, then poll
-        // the state the way the page does.
-        val asked = MigrateApi::class.java.getDeclaredField("roonConnectAskedAt")
-        asked.isAccessible = true
-        asked.setLong(a, System.currentTimeMillis() - MigrateApi.ROON_PAIRING_WINDOW_MS - 1_000)
-
-        get(a, "/api/state")
-        assertEquals("the window closed and the process was let go: $seen",
             listOf(true, false), seen.toList())
     }
 
@@ -386,7 +268,7 @@ class ApiTest {
         // handler kills the process: the app vanishes, the job row says
         // "running" forever, and there is nothing to say why.
         val store = MemoryStore()
-        store.createJob("boom", "roon-to-spotify", "{}", false)
+        store.createJob("boom", "qobuz-to-spotify", "{}", false)
         api(store).runJob("boom") { throw OutOfMemoryError("Failed to allocate 16MB") }
 
         val j = get(api(store), "/api/jobs").getJSONArray("jobs").getJSONObject(0)
@@ -400,16 +282,16 @@ class ApiTest {
 
     @Test fun `a cancelled run and a failed one are told apart`() {
         val store = MemoryStore()
-        store.createJob("c", "roon-to-qobuz", "{}", false)
+        store.createJob("c", "spotify-to-qobuz", "{}", false)
         api(store).runJob("c") { throw Cancelled() }
         assertEquals("cancelled", store.job("c")!!.status)
 
-        store.createJob("f", "roon-to-qobuz", "{}", false)
+        store.createJob("f", "spotify-to-qobuz", "{}", false)
         api(store).runJob("f") { throw RuntimeException("Spotify sign-in has expired") }
         assertEquals("failed", store.job("f")!!.status)
         assertEquals("Spotify sign-in has expired", store.job("f")!!.error)
 
-        store.createJob("ok", "roon-to-qobuz", "{}", false)
+        store.createJob("ok", "spotify-to-qobuz", "{}", false)
         api(store).runJob("ok") { }
         assertEquals("done", store.job("ok")!!.status)
         assertNull(store.job("ok")!!.error)
@@ -464,7 +346,7 @@ class ApiTest {
         val res = raw(api(), "GET", "/")
         assertEquals(200, res.status)
         assertTrue(res.contentType.startsWith("text/html"))
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("MusicD Migrate"))
+        assertTrue(res.body.toString(Charsets.UTF_8).contains("Mandarin Migration"))
         assertEquals("application/javascript; charset=utf-8",
             raw(api(), "GET", "/app.js").contentType)
     }
@@ -498,8 +380,7 @@ class ApiTest {
     // Regression: Spotify redirects to /login, not /api/spotify/callback. The
     // shared community Client IDs whitelist exactly that one loopback path,
     // and anything else is refused with "redirect_uri: Not matching
-    // configuration". The JavaScript twin of these is in
-    // test/unit/server.test.js.
+    // configuration".
 
     @Test fun `login is routed, not swallowed by the static fallback`() {
         // /login is not under /api/, so without an explicit match it would be
@@ -528,77 +409,5 @@ class ApiTest {
         // the token request is rejected for a mismatched redirect_uri.
         val pending = parseObject(store.setting("spotify.pending")!!)!!
         assertEquals("http://127.0.0.1:3380/login", pending.str("redirectUri"))
-    }
-
-    // ---------------------------------------------------------------- Roon
-    //
-    // The same assertions test/unit/server.test.js makes on the Node side. No
-    // Roon Core is contacted: every one of these is either refused before a
-    // packet would leave, or reads rows the test put in the store itself.
-
-    @Test fun `asking for the state never starts looking for a Roon Core`() {
-        // A page refresh must not broadcast on somebody's network. The Roon
-        // client is created on the first press of "Find my Roon Core".
-        val j = get(api(), "/api/state").getJSONObject("roon")
-        assertEquals("idle", j.getString("stage"))
-        assertEquals(false, j.getBoolean("paired"))
-        assertEquals(0, j.getInt("albums"))
-        assertTrue(j.isNull("scan"))
-    }
-
-    @Test fun `a scan is refused until there is a Core to scan`() {
-        val res = post(api(), "/api/roon/scan")
-        assertEquals(400, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("Pair with a Roon Core"))
-    }
-
-    @Test fun `migrating from Roon is refused with the step that is missing`() {
-        val res = post(api(), "/api/migrate",
-            """{"direction":"roon-to-spotify","albums":true,"dryRun":true}""")
-        assertEquals(400, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("Pair with a Roon Core"))
-    }
-
-    @Test fun `Roon is never offered as a destination`() {
-        // There is no way to put an album into somebody's local library. An
-        // unknown direction falls back to the default rather than inventing
-        // one, and the refusal that follows names Qobuz, not Roon.
-        val res = post(api(), "/api/migrate",
-            """{"direction":"spotify-to-roon","albums":true,"dryRun":true}""")
-        assertEquals(400, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("Qobuz"))
-    }
-
-    @Test fun `asking Roon for playlists answers with the reason, not an empty list`() {
-        val res = raw(api(), "GET", "/api/playlists?service=roon")
-        assertEquals(400, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("no length to match it on"))
-    }
-
-    @Test fun `the library CSV says there is no scan rather than sending an empty file`() {
-        val res = raw(api(), "GET", "/api/roon/library.csv")
-        assertEquals(404, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("has been scanned yet"))
-    }
-
-    @Test fun `the library CSV carries the albums and what each was matched to`() {
-        val store: Store = MemoryStore()
-        store.saveRoonAlbums("roon", listOf(
-            RoonAlbumRow("ra_one", "Kind Of Blue", "Miles Davis", 0),
-            RoonAlbumRow("ra_two", "-Minus", "Someone", 1)))
-        store.setRoonAlbumTrackCount("roon", "ra_one", 5)
-        store.cacheMatch("roon", "ra_one", "spotify", "album", "spAlbum1", "exact+tracklist")
-        store.cacheMatch("roon", "ra_two", "spotify", "album", null,
-            "an album of that name is there but its track listing does not agree")
-
-        val res = raw(api(store), "GET", "/api/roon/library.csv")
-        assertEquals(200, res.status)
-        assertTrue(res.contentType.contains("text/csv"))
-        val lines = res.body.toString(Charsets.UTF_8).split("\r\n")
-        assertEquals("artist,album,tracks,spotify,spotifyNote,qobuz,qobuzNote,roonKey", lines[0])
-        assertEquals("Miles Davis,Kind Of Blue,5,spAlbum1,,,,ra_one", lines[1])
-        // A title beginning with "-" is executed as a formula by Excel.
-        assertTrue("CSV injection guard: ${lines[2]}", lines[2].startsWith("Someone,'-Minus,"))
-        assertTrue(lines[2].contains("track listing does not agree"))
     }
 }

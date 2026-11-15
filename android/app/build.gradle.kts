@@ -15,8 +15,8 @@ android {
         targetSdk = 36
         // versionCode must rise with versionName or Android refuses to install
         // over the previous build. The workflow publishes dist/ from these.
-        versionCode = 19
-        versionName = "0.3.4"
+        versionCode = 20
+        versionName = "0.4.0"
     }
 
     sourceSets["main"].java.srcDirs("src/main/kotlin")
@@ -24,9 +24,9 @@ android {
     /**
      * THE FRONT-END IS NOT A COPY THAT HAS TO BE KEPT IN STEP.
      *
-     * The APK's page is the repository's own public/ — the identical HTML,
-     * CSS and JavaScript the Docker build serves — staged into assets/web/ by
-     * the stageWebAssets task below and packaged from there.
+     * The APK's page is the repository's own public/ — the same HTML, CSS
+     * and JavaScript ContractTest checks against the routes — staged into
+     * assets/web/ by the stageWebAssets task below and packaged from there.
      *
      * MusicD Remote Lite carries MusicD-Remote's public/ across a repository
      * boundary and pays for it with a sync tool and a CI check that fails when
@@ -93,9 +93,8 @@ android {
  *
  * A Copy task rather than an assets srcDir pointing straight at ../../public,
  * because an asset source directory is packaged at its own root — every file
- * would land at assets/index.html rather than assets/web/index.html, and the
- * server would have to know that the Docker build and the APK disagree about
- * where the page lives. One copy, and both are identical.
+ * would land at assets/index.html rather than assets/web/index.html, where
+ * the server does not look for it. One copy, byte for byte.
  */
 val stageWeb = tasks.register<Copy>("stageWebAssets") {
     from(rootProject.layout.projectDirectory.dir("../public"))

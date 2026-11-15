@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>MusicD Migrate</title>
+<title>Mandarin Migration</title>
 <link rel="icon" href="icons/favicon-64.png" sizes="64x64">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="manifest" href="manifest.json">
@@ -18,14 +18,13 @@
   This directory is bundled into the Android APK byte for byte and served there
   from a loopback HTTP server, exactly as MusicD Remote Lite bundles
   MusicD-Remote's public/. So it may only ever talk to /api/... over HTTP —
-  anything that depended on Node, on a bundler, or on an absolute origin would
-  work in Docker and be broken in the APK, where nobody would be looking.
+  anything that depended on a bundler or on an absolute origin would break.
 -->
 
 <header class="top">
-  <h1>MusicD&nbsp;Migrate</h1>
+  <h1>Mandarin&nbsp;Migration</h1>
   <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify —
-    or find your Roon library on either of them.</p>
+    or clear a library out.</p>
 </header>
 
 <main id="main" hidden>
@@ -49,9 +48,8 @@
         </div>
         <div class="fold" id="qobuz-manual" hidden>
           <p class="hint">
-            If the sign-in cannot redirect back — you are on a phone and this app is on a
-            server elsewhere — copy the whole address from the page it lands on and paste it
-            here.
+            If the sign-in cannot find its way back to this app, copy the whole address from
+            the page it lands on and paste it here.
           </p>
           <div class="row">
             <input type="text" id="qobuz-paste" placeholder="Paste the address you landed on">
@@ -138,9 +136,8 @@
         </div>
         <div class="fold" id="spotify-manual" hidden>
           <p class="hint">
-            Spotify only redirects to <code>127.0.0.1</code> over plain http, so a sign-in
-            started from another device lands on a page that will not load. That is fine:
-            copy the whole address from it and paste it here.
+            If the browser lands on a page that will not load — the app was closed while you
+            signed in — that is fine: copy the whole address from it and paste it here.
           </p>
           <div class="row">
             <input type="text" id="spotify-paste" placeholder="Paste the address you landed on">
@@ -150,55 +147,6 @@
       </div>
     </div>
 
-    <div class="svc" id="svc-roon">
-      <div class="svc-head">
-        <span class="dot" id="roon-dot"></span>
-        <strong>Roon</strong>
-        <span class="who" id="roon-who"></span>
-        <button class="ghost" id="roon-forget" hidden>Find another Core</button>
-      </div>
-      <div class="svc-body" id="roon-body">
-        <p class="hint">
-          Your own library, read out of Roon and looked for on Qobuz or Spotify.
-          <b>One direction only</b> — nothing can be written back into a local library,
-          because the files would have to exist first.
-        </p>
-        <p class="hint">
-          <b>Albums and artists, not tracks or playlists.</b> A Roon browse row gives a
-          title and an artist and not a track's length, and a title and artist alone are
-          exactly what a cover, a re-recording and a live take all satisfy. Matching on
-          that would quietly put the wrong recording in your library.
-        </p>
-        <div class="row">
-          <button class="primary" id="roon-connect">Find my Roon Core</button>
-        </div>
-        <details id="roon-manual">
-          <summary>Or type its address</summary>
-          <p class="hint">
-            Discovery is a UDP broadcast, which some networks drop. The Core's address and
-            port are in Roon under Settings → General.
-          </p>
-          <div class="row">
-            <input type="text" id="roon-host" placeholder="192.168.1.10" spellcheck="false"
-                   autocomplete="off">
-            <input type="text" id="roon-port" placeholder="9330" inputmode="numeric"
-                   autocomplete="off">
-            <button id="roon-connect-manual">Connect</button>
-          </div>
-        </details>
-        <p class="hint" id="roon-detail"></p>
-      </div>
-      <div class="svc-body" id="roon-library" hidden>
-        <p class="hint" id="roon-detail-paired"></p>
-        <div class="row">
-          <button class="primary" id="roon-scan">Scan my library</button>
-          <button class="ghost" id="roon-scan-cancel" hidden>Stop the scan</button>
-          <a class="ghost btn" id="roon-csv" download hidden>Download the library (CSV)</a>
-        </div>
-        <div class="bar" id="roon-bar" hidden><div class="fill" id="roon-fill"></div></div>
-        <p class="hint" id="roon-scan-note"></p>
-      </div>
-    </div>
   </section>
 
   <!-- ----------------------------------------------------------- the run -->
@@ -210,10 +158,6 @@
         Qobuz <span aria-hidden="true">→</span> Spotify</button>
       <button class="dir" id="dir-s2q" data-dir="spotify-to-qobuz">
         Spotify <span aria-hidden="true">→</span> Qobuz</button>
-      <button class="dir" id="dir-r2s" data-dir="roon-to-spotify">
-        Roon <span aria-hidden="true">→</span> Spotify</button>
-      <button class="dir" id="dir-r2q" data-dir="roon-to-qobuz">
-        Roon <span aria-hidden="true">→</span> Qobuz</button>
     </div>
 
     <div class="kinds">
@@ -222,7 +166,6 @@
       <label><input type="checkbox" id="k-artists" checked> Followed artists</label>
       <label><input type="checkbox" id="k-tracks" checked> Favourite tracks</label>
     </div>
-    <p class="hint" id="kinds-note" hidden></p>
 
     <div id="playlist-pick" hidden>
       <div class="pl-head">
@@ -279,6 +222,58 @@
     </div>
   </section>
 
+  <!-- ---------------------------------------------------------- clearing -->
+  <!--
+    THE ONE THING ON THIS PAGE THAT CANNOT BE UNDONE, so it is built the other
+    way round from everything else: nothing is ticked, the only button that
+    starts is a preview, and the button that removes appears only once a
+    preview of exactly this selection has finished — and stays disabled until
+    the service's name is typed. The server checks that name too.
+  -->
+  <section class="card" id="clear">
+    <h2>Clear a library</h2>
+    <p class="hint">
+      Remove favourites, albums, artists or playlists from one service — to start again,
+      or before migrating into it. <b>This cannot be undone</b>, and neither Qobuz nor
+      Spotify keeps a copy.
+    </p>
+
+    <div class="direction" role="group" aria-label="Library to clear">
+      <button class="dir clr on" id="clr-qobuz" data-service="qobuz">Qobuz</button>
+      <button class="dir clr" id="clr-spotify" data-service="spotify">Spotify</button>
+    </div>
+
+    <div class="kinds">
+      <label><input type="checkbox" id="c-tracks"> Favourite tracks</label>
+      <label><input type="checkbox" id="c-albums"> Favourite albums</label>
+      <label><input type="checkbox" id="c-artists"> Followed artists</label>
+      <label><input type="checkbox" id="c-playlists"> Playlists</label>
+    </div>
+    <label class="opt">
+      <input type="checkbox" id="c-others">
+      <span><b>Also unfollow playlists you don't own</b> — ones you follow rather than made.
+      Left alone unless this is ticked. Playlists you made are deleted.</span>
+    </label>
+
+    <div class="row go">
+      <button class="primary" id="clear-preview">Preview what would be removed</button>
+      <span class="hint" id="clear-hint"></span>
+    </div>
+
+    <div class="danger" id="clear-confirm" hidden>
+      <p id="clear-summary"></p>
+      <p class="hint">
+        <b>Download the preview first</b> — it lists every item with its id, and once they
+        are gone it is the only record of what was there.
+        <a class="ghost btn" id="clear-preview-csv" download>Download the preview (CSV)</a>
+      </p>
+      <div class="row">
+        <input type="text" id="clear-type" spellcheck="false" autocomplete="off">
+        <button class="danger-btn" id="clear-go" disabled>Remove for good</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ---------------------------------------------------------- progress -->
   <section class="card" id="progress" hidden>
     <h2 id="prog-title">Running</h2>
@@ -319,7 +314,7 @@
   <footer class="foot">
     <span id="version"></span> ·
     <a href="https://github.com/meltface-80/MusicD-Migrate" target="_blank"
-       rel="noopener">MusicD Migrate</a>
+       rel="noopener">Mandarin Migration</a>
     <p class="hint small">
       Qobuz has no public API. This app uses the same unofficial one every open-source
       Qobuz client uses, which is against Qobuz's terms of service and can stop working
@@ -328,19 +323,10 @@
   </footer>
 </main>
 
-<!-- The PIN gate, when MIGRATE_PIN is set on the server. -->
-<section class="card pin" id="pin-gate" hidden>
-  <h2>PIN</h2>
-  <p class="hint">This copy of MusicD Migrate is PIN protected.</p>
-  <div class="row">
-    <input type="password" id="pin-input" placeholder="PIN" autocomplete="off"
-           inputmode="numeric">
-    <button class="primary" id="pin-go">Unlock</button>
-  </div>
-</section>
-
 <div id="toast" class="toast" hidden></div>
 
 <script src="app.js"></script>
+<script src="run.js"></script>
+<script src="clear.js"></script>
 </body>
 </html>

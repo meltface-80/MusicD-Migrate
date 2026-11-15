@@ -128,11 +128,6 @@ main { max-width: 860px; margin: 0 auto; }
   border: 1px solid var(--line);
 }
 .dot.on { background: var(--good); border-color: var(--good); }
-/* Roon has more than two states: it can be discovering, or waiting for the
-   user to enable the extension, and showing that as "off" would read as a
-   failure when nothing has gone wrong yet. */
-.dot.busy { background: var(--warn); border-color: var(--warn); }
-.dot.bad { background: var(--bad); border-color: var(--bad); }
 
 .svc-body { padding-top: 10px; }
 .svc-body[hidden] { display: none; }
@@ -313,7 +308,22 @@ details summary { cursor: pointer; }
 .foot { color: var(--ink-dim); font-size: .88rem; text-align: center; padding: 8px 0 0; }
 .foot a { color: inherit; }
 
-.pin { max-width: 420px; margin-top: 48px; }
+/* --------------------------------------------------------------- clearing */
+
+/* The confirmation for a clear-out. Red, because it is the one action in the
+   app that cannot be undone. */
+.danger {
+  margin: 14px 0 4px;
+  padding: 11px 13px;
+  border: 1px solid var(--bad);
+  border-left-width: 4px;
+  border-radius: 8px;
+  line-height: 1.45;
+}
+.danger > p { margin: 4px 0 8px; }
+.danger .btn { margin-top: 6px; }
+button.danger-btn { background: var(--bad); color: var(--card); border-color: var(--bad); }
+button.danger-btn:disabled { background: var(--bg); color: var(--ink-dim); border-color: var(--line); }
 
 /* ------------------------------------------------------------------ toast */
 
@@ -350,7 +360,3 @@ details summary { cursor: pointer; }
   .opt { flex-wrap: wrap; }
   .opt select, .opt input[type="text"] { margin-left: 0; width: 100%; }
 }
-
-/* The Roon scan's own progress bar sits inside a service card rather than the
-   run's progress section, so it needs its own spacing. */
-#roon-bar { margin: 10px 0 4px; }

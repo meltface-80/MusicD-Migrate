@@ -3,11 +3,8 @@ package com.musicd.migrate
 /*
  * Match.kt — which track on the other service is this track.
  *
- * THE KOTLIN TWIN OF lib/match.js: same three tiers, same tolerances, same
- * refusals, same wording in the reasons. MatchTest.kt is the JavaScript test
- * file translated, so a rule that changes on one side and not the other fails
- * a test rather than quietly making the APK migrate a different set of tracks
- * than the container does.
+ * Three tiers, fixed tolerances, and a refusal with a reason wherever the
+ * evidence is not decisive. MatchTest.kt pins every one of them.
  *
  * This is the only code in the app that can be wrong in a way nobody notices.
  * A failed migration is obvious and recoverable; a migration that quietly put
@@ -57,8 +54,7 @@ object Match {
          *
          * Never a match by itself. [shortlist] carries the candidates and the
          * engine only puts them to the listing when the user has that check
-         * on, so with it off this flag changes nothing. Kept in step with
-         * `needsListing` in lib/match.js by hand.
+         * on, so with it off this flag changes nothing.
          */
         val needsListing: Boolean = false,
         /**
@@ -70,8 +66,6 @@ object Match {
          * broken corroboration read and every album came back "not found",
          * which read as a library that is not on the other service rather
          * than as a thing that was broken.
-         *
-         * Kept in step with `unreadable` in lib/match.js by hand.
          */
         val unreadable: Boolean = false
     ) {
@@ -227,103 +221,6 @@ object Match {
             "more than ${tol / 1000}s apart, so a different recording"
     }
 
-    // A trailing "(...)" or "[...]".
-    private val BRACKET_TAIL = Regex("""\s*[(\[][^)\]]*[)\]]\s*$""")
-
-    /**
-     * The trailing tags a title might have, SHORTEST first.
-     *
-     * Shortest first matters: "Always Let Me Go - Live In Tokyo (Live In
-     * Tokyo)" has two, and taking the longest leaves "Always Let Me Go",
-     * which is not the record anybody owns.
-     */
-    private fun tails(title: String): List<String> {
-        val out = ArrayList<String>()
-        BRACKET_TAIL.find(title)?.let { out.add(it.value) }
-        for (sep in listOf(" - ", ": ")) {
-            val at = title.lastIndexOf(sep)
-            if (at > 0) out.add(title.substring(at))
-        }
-        return out.sortedBy { it.length }
-    }
-
-    private val TAG_EDGES = Regex("""^[\s(\[\-:]+|[)\]\s]+$""")
-
-    /**
-     * The tag one title has and the other does not, or "" if that is not the
-     * only difference between them.
-     *
-     * The counterpart of [redundantTag]: this one finds the tags that DO say
-     * something. "Rio" against "Rio (Live)" returns "(Live)"; "Greatest Hits"
-     * against "Greatest Hits: Volume 2" returns ": Volume 2".
-     *
-     * A match on this alone would be a title-and-artist match, which this
-     * file refuses on principle: "Greatest Hits" by almost anybody is several
-     * records. So the caller holds these back for the TRACK LISTING to
-     * decide, which is the one piece of independent evidence a barcode-less
-     * album has.
-     *
-     * Kept in step with addedTag in lib/match.js by hand.
-     */
-    private fun addedTag(candTitle: String?, wantTitle: String?): String {
-        for ((long, short) in listOf(candTitle to wantTitle, wantTitle to candTitle)) {
-            val raw = long ?: ""
-            for (tail in tails(raw)) {
-                val head = Canon.canon(raw.substring(0, raw.length - tail.length))
-                if (head.isEmpty()) continue
-                if (head == Canon.canon(short ?: "") ||
-                    head == Canon.canon(Canon.stripVersion(short ?: ""))) {
-                    val inner = Canon.canon(TAG_EDGES.replace(tail, ""))
-                    if (inner.isNotEmpty()) return tail.trim()
-                }
-            }
-        }
-        return ""
-    }
-
-    /**
-     * A trailing tag that adds NOTHING the other side's title and artist did
-     * not already say -- the tag text if so, "" if not.
-     *
-     * Not a relaxation of the title gate, an observation about information.
-     * Two real examples, from a 9,635-album library:
-     *
-     *     owns "Always Let Me Go - Live In Tokyo"
-     *     they have "Always Let Me Go - Live In Tokyo (Live In Tokyo)"
-     *
-     *     owns "33 Hits"                     by Nina Simone
-     *     they have "33 Hits (Nina Simone)"  by Nina Simone
-     *
-     * Neither tag says anything new: the first repeats the title's own words,
-     * the second repeats the artist whose gate this candidate has already
-     * passed. A tag that DOES add something -- "(Live)" on a title that never
-     * mentions live, "Vol. 2", "(Remixes)" -- fails the test and the album is
-     * still refused, which is the whole reason this can be allowed at all.
-     *
-     * Either side may carry the tag: services append "(Live In Tokyo)" and
-     * Roon rips append ": Stan Getz".
-     *
-     * Kept in step with redundantTag in lib/match.js by hand.
-     */
-    private fun redundantTag(a: String?, b: String?, artists: List<String>?): String {
-        val known = HashSet<String>()
-        for (w in Canon.canon(b ?: "").split(" ")) if (w.isNotEmpty()) known.add(w)
-        for (name in Canon.artistSet(artists)) {
-            for (w in name.split(" ")) if (w.isNotEmpty()) known.add(w)
-        }
-        val raw = a ?: ""
-        for (tail in tails(raw)) {
-            val head = Canon.canon(raw.substring(0, raw.length - tail.length))
-            if (head.isEmpty()) continue
-            if (head != Canon.canon(b ?: "") &&
-                head != Canon.canon(Canon.stripVersion(b ?: ""))) continue
-            val inner = Canon.canon(TAG_EDGES.replace(tail, ""))
-            if (inner.isEmpty()) continue
-            if (inner.split(" ").all { it.isEmpty() || known.contains(it) }) return tail.trim()
-        }
-        return ""
-    }
-
     /**
      * Albums, by UPC then by title and artist.
      *
@@ -361,7 +258,7 @@ object Match {
         // answer is usually visible in what DID come back: the same record
         // under a longer title, or a different act with the same album name.
         // Candidates the title tier will not pass on its own, held for the
-        // track listing to decide. See addedTag.
+        // track listing to decide. See TitleTags.addedTag.
         data class ByListing(val c: Album, val sim: Double)
         val byListing = ArrayList<ByListing>()
 
@@ -383,11 +280,11 @@ object Match {
             val exact = cTitle == wantTitle
             val close = !exact && Canon.canon(Canon.stripVersion(c.title)) == wantStripped
             // A tag on either side that only repeats the title's own words or
-            // the artist's name. See redundantTag: the redundancy is what
+            // the artist's name. See TitleTags.redundantTag: the redundancy is what
             // makes it safe.
             val tag = if (exact || close) ""
-                else redundantTag(c.title, want.title, want.artists)
-                    .ifEmpty { redundantTag(want.title, c.title, want.artists) }
+                else TitleTags.redundantTag(c.title, want.title, want.artists)
+                    .ifEmpty { TitleTags.redundantTag(want.title, c.title, want.artists) }
 
             // A title that differs by a tag which DOES say something --
             // "(Live)" on a title that never mentions live, a venue and a
@@ -395,7 +292,7 @@ object Match {
             // that only the TRACK LISTING can promote, so with corroboration
             // off this changes nothing at all. See needsListing on Result.
             if (!exact && !close && tag.isEmpty()) {
-                if (addedTag(c.title, want.title).isNotEmpty()) {
+                if (TitleTags.addedTag(c.title, want.title).isNotEmpty()) {
                     byListing.add(ByListing(c, sim))
                 }
                 continue
@@ -459,21 +356,8 @@ object Match {
             shortlist = ordered.map { it.c })
     }
 
-    /**
-     * How much of a source album's track listing has to be present on a
-     * candidate before a barcode-less album match is allowed.
-     *
-     * 0.7, and the number is a judgement about what the two failure modes
-     * cost. Too high refuses a record the user owns because one track is
-     * titled differently or a bonus track is missing from their rip -- one
-     * line in a report they can act on. Too low accepts a different record
-     * with the same name, which looks like it worked. Seven tracks in ten
-     * agreeing is not something two different records do; three in ten
-     * routinely is, for a compilation or a live set.
-     *
-     * Kept in step with TRACKLIST_MIN_COVERAGE in lib/match.js by hand.
-     */
-    const val TRACKLIST_MIN_COVERAGE = 0.7
+    /** See [Tracklist.MIN_COVERAGE]. */
+    const val TRACKLIST_MIN_COVERAGE = Tracklist.MIN_COVERAGE
 
     data class Agreement(
         val coverage: Double,
@@ -486,92 +370,16 @@ object Match {
         val unreadable: Boolean = false
     )
 
-    private fun trackTitleSet(titles: List<Track>?): Set<String> {
-        val out = LinkedHashSet<String>()
-        for (t in titles.orEmpty()) {
-            val c = Canon.canon(Canon.stripVersion(t.title))
-            if (c.isNotEmpty()) out.add(c)
-        }
-        return out
-    }
+    /** See [Tracklist.agreement]. */
+    fun tracklistAgreement(wantTitles: List<Track>?, candTitles: List<Track>?): Agreement =
+        Tracklist.agreement(wantTitles, candTitles)
 
-    /**
-     * How much of a source album's track listing turns up on a candidate.
-     *
-     * Titles are compared canonicalised AND with their edition suffix removed,
-     * because a remastered edition on Spotify writes its tracks as "So What -
-     * Remastered" where a local rip just says "So What". Comparing the raw
-     * strings would find nothing on exactly the albums this exists for.
-     *
-     * Direction matters: the fraction is of what the USER OWNS that is
-     * present, not of what the candidate holds. A deluxe edition with eleven
-     * bonus tracks still contains all of the standard edition, and refusing it
-     * for being bigger is not the job -- reporting the sizes is.
-     */
-    fun tracklistAgreement(wantTitles: List<Track>?, candTitles: List<Track>?): Agreement {
-        val want = trackTitleSet(wantTitles)
-        val cand = trackTitleSet(candTitles)
-        if (want.isEmpty() || cand.isEmpty()) {
-            return Agreement(0.0, 0, want.size, cand.size)
-        }
-        val shared = want.count { cand.contains(it) }
-        return Agreement(shared.toDouble() / want.size, shared, want.size, cand.size)
-    }
-
-    /**
-     * The album tier for a source with NO BARCODE -- Roon.
-     *
-     * Spotify and Qobuz both hand over a barcode, which is decisive, and that
-     * is what the `upc` tier is. A Roon library hands over nothing of the
-     * kind: a browse row is a title and an artist, and title plus artist is
-     * not decisive for an album any more than it is for a track. "Greatest
-     * Hits" by almost anybody is several different records; a live album and a
-     * studio album share a name often enough; a covers band files under a name
-     * that normalises to the same string.
-     *
-     * So the album's own TRACK LISTING is made to carry the decision. It is
-     * the one piece of independent evidence a Roon album has, and it is a
-     * strong one: two different records by the same artist with the same title
-     * do not have the same eleven track titles.
-     *
-     * This is a GATE, not a ranker. [matchAlbum] has already ordered the
-     * candidates; this says yes or no to one of them, and a caller works down
-     * the list.
-     */
+    /** The gate for a barcode-less album. See [Tracklist.corroborates]. */
     fun tracklistCorroborates(
         wantTitles: List<Track>?,
         candTitles: List<Track>?,
         minCoverage: Double = TRACKLIST_MIN_COVERAGE
-    ): Agreement {
-        val a = tracklistAgreement(wantTitles, candTitles)
-        // The two "could not check" cases are kept apart from "checked and it
-        // disagrees", because they call for different action from the user:
-        // one is something to look into, the other is a record that is not
-        // there. They are also flagged `unreadable`, so the engine can count
-        // them as a FAILURE rather than as a miss -- and, crucially, not
-        // cache them. See Migration.corroborate.
-        if (a.wantCount == 0) {
-            return a.copy(ok = false, unreadable = true, reason =
-                "could not read this album's track listing from the source, so there " +
-                "was nothing to corroborate a title-and-artist match with")
-        }
-        if (a.candCount == 0) {
-            return a.copy(ok = false, unreadable = true, reason =
-                "the other service would not list that album's tracks, so the match " +
-                "could not be corroborated")
-        }
-        if (a.coverage < minCoverage) {
-            return a.copy(ok = false, reason =
-                "an album of that name is there but its track listing does not agree: " +
-                "${a.shared} of your ${a.wantCount} tracks on its ${a.candCount}. " +
-                "Probably a different record with the same name")
-        }
-        return a.copy(ok = true, reason =
-            if (a.candCount == a.wantCount)
-                "matched on title, artist and all ${a.wantCount} track titles"
-            else "matched on title, artist and track listing (${a.shared} of your " +
-                "${a.wantCount} tracks, on an edition of ${a.candCount})")
-    }
+    ): Agreement = Tracklist.corroborates(wantTitles, candTitles, minCoverage)
 
     /**
      * Artists, by name.

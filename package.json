@@ -1,7 +1,7 @@
 {
-  "name": "musicd-migrate",
-  "version": "0.3.4",
-  "description": "Migrate playlists, albums, artists and tracks between Qobuz and Spotify, in either direction.",
+  "name": "mandarin-migration",
+  "private": true,
+  "description": "Android app: migrate playlists, albums, artists and tracks between Qobuz and Spotify, or clear a library out. Node is used only for the page's lint and the icon generator.",
   "license": "MIT",
   "author": "Lewis Menzies (Music Duck / MusicD)",
   "homepage": "https://github.com/meltface-80/MusicD-Migrate",
@@ -9,17 +9,7 @@
     "type": "git",
     "url": "https://github.com/meltface-80/MusicD-Migrate.git"
   },
-  "main": "index.js",
-  "engines": {
-    "node": ">=22"
-  },
   "scripts": {
-    "start": "node index.js",
-    "test": "bash test/run.sh"
-  },
-  "dependencies": {
-    "better-sqlite3": "^11.10.0",
-    "compression": "^1.8.0",
-    "express": "^4.21.2"
+    "check": "bash tools/check.sh"
   }
 }

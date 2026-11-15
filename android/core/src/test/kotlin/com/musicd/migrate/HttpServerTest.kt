@@ -25,7 +25,7 @@ class HttpServerTest {
 
     private class TestAssets : Assets {
         override fun read(path: String): ByteArray? = when (path) {
-            "web/index.html" -> "<!doctype html><title>MusicD Migrate</title>".toByteArray()
+            "web/index.html" -> "<!doctype html><title>Mandarin Migration</title>".toByteArray()
             "web/app.js" -> "console.log('hi')".toByteArray()
             else -> null
         }
@@ -74,7 +74,7 @@ class HttpServerTest {
         val (status, body, type) = fetch("/")
         assertEquals(200, status)
         assertTrue(type.startsWith("text/html"))
-        assertTrue(body.contains("MusicD Migrate"))
+        assertTrue(body.contains("Mandarin Migration"))
     }
 
     @Test fun `the API answers over the wire with the shape the page expects`() {

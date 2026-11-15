@@ -7,8 +7,8 @@ import com.musicd.migrate.http.Assets
  * The bundled page, read from the APK.
  *
  * The files under assets/web/ are the repository's own public/ directory,
- * staged there by the stageWebAssets Copy task — the identical HTML, CSS and
- * JavaScript the Docker build serves, not a copy kept in step by hand.
+ * staged there by the stageWebAssets Copy task — not a copy kept in step by
+ * hand.
  */
 class AndroidAssets(context: Context) : Assets {
     private val assets = context.assets

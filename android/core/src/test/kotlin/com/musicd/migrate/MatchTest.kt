@@ -8,7 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The JavaScript match tests (test/unit/match.test.js), translated. */
+/** The matcher's tiers, tolerances and refusals. */
 class MatchTest {
 
     private fun t(
@@ -246,10 +246,7 @@ class MatchTest {
 
     // --------------------------------------------------- the tracklist tier
     //
-    // The gate that makes a barcode-less album match -- a Roon album --
-    // decisive. The JavaScript tests for the same rules are in
-    // test/unit/match.test.js; these two have to agree or the APK and the
-    // container migrate different records.
+    // The gate that makes a barcode-less album match decisive.
 
     private fun tl(vararg titles: String): List<Track> =
         titles.mapIndexed { i, t -> Track("t$i", "", t, emptyList(), "", null) }

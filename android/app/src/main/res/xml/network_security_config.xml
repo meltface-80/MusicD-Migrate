@@ -16,7 +16,7 @@
   LOOPBACK ONLY, AND DELIBERATELY NARROWER THAN MusicD REMOTE LITE'S.
 
   That app sets cleartextTrafficPermitted on its base-config, because it has to
-  talk to a Roon core over ws:// on the LAN. This app has no such need: the only
+  talk to devices over plain http on the LAN. This app has no such need: the only
   cleartext it ever does is to itself. So the base config is left at the secure
   default — every other destination must be HTTPS — and the exemption is scoped
   to the two names the loopback interface answers to.

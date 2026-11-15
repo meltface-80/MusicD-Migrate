@@ -6,8 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * A stand-in for a service client.
  *
  * It implements MusicTarget exactly as SpotifyClient and QobuzClient do,
- * which is the point: Migration cannot tell them apart, and neither can this.
- * The JavaScript suite has the same fake in test/unit/migrate.test.js.
+ * which is the point: Migration and Clearance cannot tell them apart.
  */
 open class FakeService(
     override val serviceName: String,
@@ -49,7 +48,8 @@ open class FakeService(
 
     override fun playlists(): List<Playlist> =
         playlistsOverride?.invoke() ?: libPlaylists.map { (id, p) ->
-            Playlist(id = id, name = p.first, ownerId = "me", trackCount = p.second.size)
+            Playlist(id = id, name = p.first, ownerId = playlistOwners[id] ?: "me",
+                trackCount = p.second.size)
         }
 
     override fun playlistTracks(playlistId: String): List<Track> =
@@ -186,4 +186,47 @@ open class FakeService(
         writtenAlbums.addAll(albumIds)
     }
     override fun followArtists(artistIds: List<String>) { writtenArtists.addAll(artistIds) }
+
+    // ------------------------------------------------------------- removals
+    //
+    // A removal really removes from the fake library, so a test can assert on
+    // what is LEFT, which is what the user will see — and every call is
+    // recorded with its batch, so a test can assert on how it was asked.
+
+    val removeCalls = java.util.Collections.synchronizedList(ArrayList<Pair<String, List<String>>>())
+    /** Make a removal of these kinds blow up: "tracks", "albums", "artists", "playlists". */
+    var removeFails: (String) -> Boolean = { false }
+    var removeAuthFails = false
+
+    private fun removing(kind: String, ids: List<String>) {
+        if (removeAuthFails) throw AuthError("Spotify sign-in has expired")
+        if (removeFails(kind)) throw RuntimeException("$kind removal refused")
+        removeCalls.add(kind to ids.toList())
+    }
+
+    override fun unsaveTracks(trackIds: List<String>) {
+        removing("tracks", trackIds)
+        libTracks.removeAll { it.id in trackIds }
+    }
+
+    override fun unsaveAlbums(albumIds: List<String>) {
+        removing("albums", albumIds)
+        libAlbums.removeAll { it.id in albumIds }
+    }
+
+    override fun unfollowArtists(artistIds: List<String>) {
+        removing("artists", artistIds)
+        libArtists.removeAll { it.id in artistIds }
+    }
+
+    /** Who owns each playlist in [libPlaylists]; anything not named is "me". */
+    var playlistOwners: MutableMap<String, String> = HashMap()
+
+    override fun removePlaylist(playlistId: String, owned: Boolean) {
+        removing("playlists", listOf(playlistId))
+        removedPlaylists.add(playlistId to owned)
+        libPlaylists.remove(playlistId)
+    }
+
+    val removedPlaylists = java.util.Collections.synchronizedList(ArrayList<Pair<String, Boolean>>())
 }

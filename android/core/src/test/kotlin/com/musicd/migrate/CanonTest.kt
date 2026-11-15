@@ -6,12 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The JavaScript canon tests (test/unit/canon.test.js), translated.
- *
- * Kept line for line on purpose: this file and that one are the contract
- * between the container and the APK, and a rule that changes on one side and
- * not the other should fail here rather than migrate a different set of tracks
- * on a phone.
+ * Name normalisation, and above all the edition-word list: which suffixes are
+ * an edition (safe to match through) and which name a different recording.
  */
 class CanonTest {
 

@@ -25,10 +25,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * shutdown that does not interrupt the worker doing the shutting down.
  *
  * This is what lets the repository's public/ run unchanged inside the APK: the
- * page is the same HTML, CSS and JavaScript the Docker build serves, and it
- * still talks to /api/… over HTTP. Intercepting requests in the WebView cannot
+ * page talks to /api/… over HTTP, exactly as a page served by any web server
+ * would. Intercepting requests in the WebView cannot
  * work, because shouldInterceptRequest is not given the BODY of a POST — and
- * this app POSTs to sign in, to start a migration and to cancel one.
+ * this app POSTs to sign in, to start a migration or a clear-out and to cancel
+ * one.
  *
  * LOOPBACK BY DEFAULT, AND THAT IS THE ONLY SAFE STATE HERE. Behind this
  * socket are two services' access tokens and the ability to write to somebody's
