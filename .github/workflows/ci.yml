@@ -261,9 +261,12 @@ jobs:
       #
       # This pushes with GITHUB_TOKEN, and GitHub deliberately does not fire
       # workflows for pushes made with it — so this cannot start a build loop.
+      # Also on a manual "Run workflow", so a release can be published right
+      # after the signing secrets are added without pushing anything.
       - name: Publish the APK into dist/
         if: >-
-          github.event_name == 'push' && github.ref_type == 'branch'
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref_type == 'branch'
           && steps.signing.outputs.have_key == 'true'
         env:
           APK: ${{ steps.name.outputs.apk }}

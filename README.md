@@ -9,9 +9,13 @@ Everything runs on the phone. The app serves its own page from a loopback
 HTTP server inside the same process and shows it in a WebView: no server, no
 Docker, nothing else running.
 
-*(Formerly MusicD Migrate. The Android package is still `com.musicd.migrate`,
-so this version installs over the old one and keeps your sign-ins; the
-repository keeps its name too.)*
+*(Formerly MusicD Migrate; the repository keeps its old name.)*
+
+> **Upgrading from MusicD Migrate: uninstall it first.** 0.4.0 is signed with
+> a new key — the original one was not kept — and Android will not install an
+> update whose signing key changed. Uninstall MusicD Migrate, install Mandarin
+> Migration, and sign in to Qobuz and Spotify again. This happens once: every
+> update after this one installs over the top.
 
 ---
 
@@ -217,14 +221,18 @@ Android refuses to install an unsigned APK, so CI will not publish one: the
 `apk` job builds and checks everything, warns, and skips only the publish until
 a key is available.
 
-**The key for this project already exists.** `dist/musicd-migrate-0.3.4.apk`
-is signed with it, and its fingerprint is pinned in
+**The key for this project is `mandarin-release.jks`**, made for 0.4.0
+(`CN=Mandarin Migration`, alias `musicd`). Its fingerprint is pinned in
 `tools/release-key.sha256`. Every later build has to use the **same** key or
 Android will refuse to install it over the copy already on the phone — that is
 the whole reason this is a stored secret rather than a key made per run.
 
-To let CI take over the publishing, add the keystore you were given as two
-repository secrets under **Settings → Secrets and variables → Actions**:
+(The key that signed MusicD Migrate up to 0.3.4 was not kept, which is why
+0.4.0 needs the old app uninstalled once. `dist/musicd-migrate-0.3.4.apk`,
+while it is still there, is signed with that old key.)
+
+To let CI do the publishing, add the keystore as two repository secrets under
+**Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
 |---|---|
@@ -236,7 +244,7 @@ The alias is `musicd`, which the workflow passes as `MUSICD_KEY_ALIAS`.
 To get the base64 blob from the keystore file:
 
 ```bash
-base64 -w0 musicd-release.jks     # macOS: base64 -i musicd-release.jks
+base64 -w0 mandarin-release.jks   # macOS: base64 -i mandarin-release.jks
 ```
 
 With those two secrets set, bumping `versionName` and `versionCode` in
@@ -244,17 +252,20 @@ With those two secrets set, bumping `versionName` and `versionCode` in
 against the pinned fingerprint, writes the APK and `dist/latest.json`, and
 rewrites the download link in this README.
 
+To publish without a code change — for instance right after adding the
+secrets — open **Actions → CI → Run workflow** on `main`.
+
 ### Starting over with a new key
 
 Only if the keystore is lost. Make one with:
 
 ```bash
 keytool -genkeypair -v \
-  -keystore musicd-release.jks \
+  -keystore mandarin-release.jks \
   -alias musicd \
   -keyalg RSA -keysize 4096 -validity 10950 \
   -storetype PKCS12 \
-  -dname "CN=MusicD Migrate"
+  -dname "CN=Mandarin Migration"
 ```
 
 Then delete `tools/release-key.sha256` (or replace it with the new
