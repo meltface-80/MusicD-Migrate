@@ -23,8 +23,8 @@
 
 <header class="top">
   <h1>Mandarin&nbsp;Migration</h1>
-  <p class="sub">Move playlists, albums, artists and tracks between Qobuz and Spotify —
-    or clear a library out.</p>
+  <p class="sub">Import a library file into your Qobuz favourites — or clear a Qobuz
+    library out.</p>
 </header>
 
 <main id="main" hidden>
@@ -73,109 +73,35 @@
       </div>
     </div>
 
-    <div class="svc" id="svc-spotify">
-      <div class="svc-head">
-        <span class="dot" id="spotify-dot"></span>
-        <strong>Spotify</strong>
-        <span class="who" id="spotify-who"></span>
-        <button class="ghost" id="spotify-signout" hidden>Sign out</button>
-      </div>
-      <div class="svc-body" id="spotify-body">
-        <!-- Open by default: this is the one thing a first-time user has to
-             read, and having it collapsed is why the first person to try the
-             app could not find where the Client ID comes from. render() closes
-             it once an id is saved. -->
-        <details id="spotify-setup" open>
-          <summary>Where do I get a Client ID?</summary>
-
-          <p class="hint">
-            <b>Spotify has paused new app registrations.</b> The <b>Create app</b>
-            button on their dashboard is greyed out — "new integrations are
-            currently on hold" — so the usual advice does not work at the moment.
-          </p>
-
-          <p class="hint"><b>Redirect URI</b> — whichever route you take, this is
-            the address to register:</p>
-          <code class="copy" id="redirect-uri" tabindex="0" role="button"
-                title="Click to copy"></code>
-          <span class="warn" id="redirect-warn" hidden></span>
-
-          <p class="hint">
-            <b>This build has one filled in already</b>, because a registration
-            you cannot obtain is not a setup step. Know what it is: it is one of
-            the well-known ids the open-source Spotify world shares, so the
-            consent screen will name <i>that</i> application rather than this
-            one, and the requests count against its quota. It works here because
-            the address above is whitelisted on it.
-          </p>
-
-          <ol class="steps">
-            <li><b>If you have a Spotify app of your own</b> — from anything at
-              all — prefer it; only new registrations are frozen. Open it on
-              <a href="https://developer.spotify.com/dashboard" target="_blank"
-                 rel="noopener">developer.spotify.com/dashboard</a> →
-              <b>Settings</b> → <b>Edit</b>, add the address above under
-              <b>Redirect URIs</b>, save, then paste the <b>Client ID</b> below.
-              A saved id always wins over the built-in one.</li>
-            <li><b>If you don't</b>, leave the field alone and sign in.</li>
-          </ol>
-
-          <p class="hint">
-            No client secret either way. Sign-in uses PKCE, so nothing secret is
-            stored in this app.
-          </p>
-        </details>
-        <div class="row">
-          <input type="text" id="spotify-client-id" placeholder="Spotify Client ID"
-                 spellcheck="false" autocomplete="off">
-          <button id="spotify-save-id">Save</button>
-        </div>
-        <div class="row">
-          <button class="primary" id="spotify-start">Sign in with Spotify</button>
-          <button class="ghost" id="spotify-manual-toggle">Can't get back here?</button>
-        </div>
-        <div class="fold" id="spotify-manual" hidden>
-          <p class="hint">
-            If the browser lands on a page that will not load — the app was closed while you
-            signed in — that is fine: copy the whole address from it and paste it here.
-          </p>
-          <div class="row">
-            <input type="text" id="spotify-paste" placeholder="Paste the address you landed on">
-            <button id="spotify-paste-go">Finish</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
   </section>
 
-  <!-- ----------------------------------------------------------- the run -->
+  <!-- -------------------------------------------------------- the import -->
+  <!--
+    The library comes from a FILE: Mandarin's export, or any other software's
+    CSV. It is uploaded once, read on the phone, and summarised BEFORE
+    anything is searched for, so the user sees what was found — and any
+    warning — while they can still choose a different file.
+  -->
   <section class="card" id="setup">
-    <h2>What to move</h2>
+    <h2>Import a library file</h2>
+    <p class="hint">
+      A CSV exported from Mandarin or any other music software. Each album in it is looked
+      for on Qobuz and added to your <b>favourite albums</b>. One row per track works best:
+      an album with no barcode is only accepted when its track listing agrees.
+    </p>
 
-    <div class="direction" role="group" aria-label="Direction">
-      <button class="dir on" id="dir-q2s" data-dir="qobuz-to-spotify">
-        Qobuz <span aria-hidden="true">→</span> Spotify</button>
-      <button class="dir" id="dir-s2q" data-dir="spotify-to-qobuz">
-        Spotify <span aria-hidden="true">→</span> Qobuz</button>
+    <div class="row">
+      <label class="btn" id="file-pick">Choose a file…
+        <input type="file" id="file-input" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden>
+      </label>
+      <span class="hint" id="file-note">No file chosen.</span>
+      <button class="ghost" id="file-forget" hidden>Forget it</button>
     </div>
 
-    <div class="kinds">
-      <label><input type="checkbox" id="k-playlists" checked> Playlists</label>
-      <label><input type="checkbox" id="k-albums" checked> Favourite albums</label>
-      <label><input type="checkbox" id="k-artists" checked> Followed artists</label>
-      <label><input type="checkbox" id="k-tracks" checked> Favourite tracks</label>
-    </div>
-
-    <div id="playlist-pick" hidden>
-      <div class="pl-head">
-        <strong>Playlists</strong>
-        <span class="hint" id="pl-count"></span>
-        <button class="ghost" id="pl-all">All</button>
-        <button class="ghost" id="pl-none">None</button>
-        <button class="ghost" id="pl-load">Refresh</button>
-      </div>
-      <div class="pl-list" id="pl-list"></div>
+    <div class="summary" id="file-summary" hidden>
+      <div class="counts" id="file-counts"></div>
+      <ul class="warnings" id="file-warnings"></ul>
+      <p class="hint small" id="file-columns"></p>
     </div>
 
     <details class="opts">
@@ -187,32 +113,15 @@
       </label>
       <label class="opt">
         <input type="checkbox" id="o-strict">
-        <span><b>Only certain matches</b> — accept a track only when both services agree on
-        its ISRC. Fewer records move; every one that does is the same recording.</span>
+        <span><b>Only certain matches</b> — accept an album only when Qobuz has the same
+        barcode. Fewer records come across; every one that does is the same release.</span>
       </label>
       <label class="opt">
         <input type="checkbox" id="o-corroborate" checked>
         <span><b>Check an album's track listing</b> — when there is no barcode to go on,
-        confirm a title-and-artist album match against the album's own tracks before
-        accepting it. Costs a couple of extra lookups per album and is the difference
-        between the record you own and a different one with the same name.</span>
-      </label>
-      <label class="opt">
-        <input type="checkbox" id="o-others">
-        <span><b>Include playlists you don't own</b> — ones you follow rather than
-        made.</span>
-      </label>
-      <label class="opt">
-        <span>If a playlist of that name is already there:</span>
-        <select id="o-existing">
-          <option value="add-missing" selected>Add only what is missing</option>
-          <option value="create-new">Make another one</option>
-          <option value="skip">Leave it alone</option>
-        </select>
-      </label>
-      <label class="opt">
-        <span>Name migrated playlists with a suffix:</span>
-        <input type="text" id="o-suffix" placeholder="(none)" maxlength="40">
+        confirm a title-and-artist match against the album's own tracks before accepting
+        it. This is the difference between the record you own and a different one with the
+        same name.</span>
       </label>
     </details>
 
@@ -233,15 +142,10 @@
   <section class="card" id="clear">
     <h2>Clear a library</h2>
     <p class="hint">
-      Remove favourites, albums, artists or playlists from one service — to start again,
-      or before migrating into it. <b>This cannot be undone</b>, and neither Qobuz nor
-      Spotify keeps a copy.
+      Remove favourites, albums, artists or playlists from your Qobuz library — to start
+      again, or before importing into it. <b>This cannot be undone</b>, and Qobuz keeps no
+      copy.
     </p>
-
-    <div class="direction" role="group" aria-label="Library to clear">
-      <button class="dir clr on" id="clr-qobuz" data-service="qobuz">Qobuz</button>
-      <button class="dir clr" id="clr-spotify" data-service="spotify">Spotify</button>
-    </div>
 
     <div class="kinds">
       <label><input type="checkbox" id="c-tracks"> Favourite tracks</label>
@@ -318,7 +222,7 @@
     <p class="hint small">
       Qobuz has no public API. This app uses the same unofficial one every open-source
       Qobuz client uses, which is against Qobuz's terms of service and can stop working
-      without notice. The Spotify side is the official Web API.
+      without notice.
     </p>
   </footer>
 </main>
@@ -326,6 +230,7 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="app.js"></script>
+<script src="import.js"></script>
 <script src="run.js"></script>
 <script src="clear.js"></script>
 </body>

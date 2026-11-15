@@ -31,77 +31,31 @@ class ApiTest : ApiFixtures() {
         val q = j.getJSONObject("qobuz")
         assertEquals(false, q.getBoolean("signedIn"))
         assertTrue(q.has("name"))
-        val sp = j.getJSONObject("spotify")
-        assertEquals(false, sp.getBoolean("signedIn"))
-        assertTrue(sp.has("name"))
-        assertTrue(sp.has("clientId"))
-        assertTrue(sp.has("redirectUri"))
-        assertTrue(sp.getJSONObject("redirectCheck").has("ok"))
-        assertTrue(sp.getJSONObject("redirectCheck").has("reason"))
+        assertTrue("no file chosen yet", j.isNull("import"))
+        assertTrue("Spotify is gone from the state", !j.has("spotify"))
     }
 
-    @Test fun `the redirect URI is derived from the request, and Spotify accepts it`() {
-        val j = get(api(), "/api/state").getJSONObject("spotify")
-        // /login, not /api/spotify/callback — see Pkce.CALLBACK_PATH.
-        assertEquals("http://127.0.0.1:3380/login", j.getString("redirectUri"))
-        // On the phone the server is ALWAYS on loopback, which is the one
-        // address Spotify accepts over plain http — so the APK never hits the
-        // caveat the Docker build has to explain.
-        assertEquals(true, j.getJSONObject("redirectCheck").getBoolean("ok"))
-    }
+    @Test fun `an import is refused without a file, then without a sign-in`() {
+        val a = api()
+        val noFile = post(a, "/api/migrate", """{"direction":"csv-to-qobuz","albums":true}""")
+        assertEquals(400, noFile.status)
+        assertTrue(JSONObject(noFile.body.toString(Charsets.UTF_8)).getString("error")
+            .contains("Choose a library file"))
 
-    @Test fun `a migration is refused while not signed in`() {
-        val res = post(api(), "/api/migrate", """{"direction":"qobuz-to-spotify","tracks":true}""")
+        assertEquals(200, upload(a, SMALL_LIBRARY).status)
+        val res = post(a, "/api/migrate", """{"direction":"csv-to-qobuz","albums":true}""")
         assertEquals(400, res.status)
         assertTrue(JSONObject(res.body.toString(Charsets.UTF_8)).getString("error")
             .contains("Sign in to Qobuz"))
     }
 
-    @Test fun `with nothing saved, the baked-in client id is the one in force`() {
-        // Spotify has frozen new registrations, so a setup step nobody can
-        // complete is an unusable app. The id is baked in and the page is
-        // shown the one actually in force rather than an empty box.
-        assertEquals(Pkce.DEFAULT_CLIENT_ID,
-            get(api(), "/api/state").getJSONObject("spotify").getString("clientId"))
-    }
-
-    @Test fun `a sign-in starts with no id saved, using the baked-in one`() {
-        // This used to be a 400 telling the user to set an id first. There is
-        // nowhere to get one, so it was a dead end.
-        val res = raw(api(), "GET", "/api/spotify/oauth/start")
-        assertEquals(302, res.status)
-        val to = res.headers["Location"].orEmpty()
-        assertTrue(to, to.startsWith("https://accounts.spotify.com/authorize"))
-        assertTrue("the authorise URL must carry the id in force: $to",
-            to.contains("client_id=${Pkce.DEFAULT_CLIENT_ID}"))
-    }
-
-    @Test fun `a saved client id wins over the baked-in one`() {
-        val store = MemoryStore()
-        val a = api(store)
-        val mine = "b".repeat(32)
-        assertEquals(200, post(a, "/api/spotify/client-id", """{"clientId":"$mine"}""").status)
-        assertEquals(mine, get(a, "/api/state").getJSONObject("spotify").getString("clientId"))
-        assertNotEquals("it is a fallback, not an override", mine, Pkce.DEFAULT_CLIENT_ID)
-
-        val to = raw(a, "GET", "/api/spotify/oauth/start").headers["Location"].orEmpty()
-        assertTrue("and the sign-in uses the saved one: $to", to.contains("client_id=$mine"))
-    }
-
-    @Test fun `a malformed Spotify client id is refused with an actionable message`() {
-        val res = post(api(), "/api/spotify/client-id", """{"clientId":"not-a-client-id"}""")
+    @Test fun `the old Spotify directions are refused rather than run as something else`() {
+        val a = api(signedIn())
+        upload(a, SMALL_LIBRARY)
+        val res = post(a, "/api/migrate", """{"direction":"qobuz-to-spotify","albums":true}""")
         assertEquals(400, res.status)
         assertTrue(JSONObject(res.body.toString(Charsets.UTF_8)).getString("error")
-            .contains("32 letters and numbers"))
-    }
-
-    @Test fun `a well-formed client id is accepted and reported back`() {
-        val store = MemoryStore()
-        val a = api(store)
-        assertEquals(200, post(a, "/api/spotify/client-id",
-            """{"clientId":"${"a".repeat(32)}"}""").status)
-        assertEquals("a".repeat(32),
-            get(a, "/api/state").getJSONObject("spotify").getString("clientId"))
+            .contains("not offered"))
     }
 
     @Test fun `an unknown job is a 404, not a crash`() {
@@ -111,7 +65,7 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `the CSV report escapes quotes, commas and formula-leading cells`() {
         val store = MemoryStore()
-        store.createJob("csvjob", "qobuz-to-spotify", "{}", false)
+        store.createJob("csvjob", "csv-to-qobuz", "{}", false)
         store.addItems("csvjob", listOf(
             JobItem("track", "1", "Song, with a comma", "unmatched",
                 container = "My \"Best\" Mix",
@@ -127,7 +81,7 @@ class ApiTest : ApiFixtures() {
         assertTrue("each row ends with the item's own id: ${lines[2]}", lines[2].endsWith(",2"))
         assertTrue("named after the run, not the old app",
             res.headers["Content-Disposition"].orEmpty()
-                .contains("mandarin-qobuz-to-spotify-csvjob.csv"))
+                .contains("mandarin-csv-to-qobuz-csvjob.csv"))
         assertTrue("a quote is doubled and the cell quoted",
             lines[1].contains("\"My \"\"Best\"\" Mix\""))
         assertTrue("a comma forces quoting", lines[1].contains("\"Song, with a comma\""))
@@ -137,7 +91,7 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `job items can be filtered to the unmatched ones`() {
         val store = MemoryStore()
-        store.createJob("mixed", "qobuz-to-spotify", "{}", false)
+        store.createJob("mixed", "csv-to-qobuz", "{}", false)
         store.addItems("mixed", listOf(
             JobItem("track", "1", "A", "matched", targetId = "x"),
             JobItem("track", "2", "B", "unmatched", note = "gone")))
@@ -181,8 +135,10 @@ class ApiTest : ApiFixtures() {
             onBusyChanged = { seen.add(it) })
 
         assertEquals("idle: nothing to protect, nothing reported", 0, seen.size)
+        assertEquals(200, upload(a, SMALL_LIBRARY).status)
+        assertEquals("parsing a file is not a run", 0, seen.size)
 
-        val res = post(a, "/api/migrate", """{"direction":"qobuz-to-spotify","albums":true}""")
+        val res = post(a, "/api/migrate", """{"direction":"csv-to-qobuz","albums":true}""")
         assertEquals(res.body.toString(Charsets.UTF_8), 200, res.status)
         val jobId = JSONObject(res.body.toString(Charsets.UTF_8)).getString("jobId")
 
@@ -212,11 +168,12 @@ class ApiTest : ApiFixtures() {
         }
         val a = MigrateApi(store, FakeAssets(emptyMap()), slow, "0.1.0",
             onBusyChanged = { seen.add(it) })
+        upload(a, SMALL_LIBRARY)
 
         assertEquals(200, post(a, "/api/migrate",
-            """{"direction":"qobuz-to-spotify","albums":true}""").status)
+            """{"direction":"csv-to-qobuz","albums":true}""").status)
         val again = post(a, "/api/migrate",
-            """{"direction":"qobuz-to-spotify","albums":true}""")
+            """{"direction":"csv-to-qobuz","albums":true}""")
         assertEquals("a second run is refused", 409, again.status)
 
         val until = System.currentTimeMillis() + 20_000
@@ -243,8 +200,9 @@ class ApiTest : ApiFixtures() {
         val seen = java.util.Collections.synchronizedList(ArrayList<Boolean>())
         val a = MigrateApi(store, FakeAssets(emptyMap()), slow, "0.1.0",
             onBusyChanged = { seen.add(it) })
+        upload(a, SMALL_LIBRARY)
 
-        val res = post(a, "/api/migrate", """{"direction":"qobuz-to-spotify","albums":true}""")
+        val res = post(a, "/api/migrate", """{"direction":"csv-to-qobuz","albums":true}""")
         assertEquals(200, res.status)
         val jobId = JSONObject(res.body.toString(Charsets.UTF_8)).getString("jobId")
 
@@ -268,7 +226,7 @@ class ApiTest : ApiFixtures() {
         // handler kills the process: the app vanishes, the job row says
         // "running" forever, and there is nothing to say why.
         val store = MemoryStore()
-        store.createJob("boom", "qobuz-to-spotify", "{}", false)
+        store.createJob("boom", "csv-to-qobuz", "{}", false)
         api(store).runJob("boom") { throw OutOfMemoryError("Failed to allocate 16MB") }
 
         val j = get(api(store), "/api/jobs").getJSONArray("jobs").getJSONObject(0)
@@ -282,16 +240,16 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `a cancelled run and a failed one are told apart`() {
         val store = MemoryStore()
-        store.createJob("c", "spotify-to-qobuz", "{}", false)
+        store.createJob("c", "csv-to-qobuz", "{}", false)
         api(store).runJob("c") { throw Cancelled() }
         assertEquals("cancelled", store.job("c")!!.status)
 
-        store.createJob("f", "spotify-to-qobuz", "{}", false)
-        api(store).runJob("f") { throw RuntimeException("Spotify sign-in has expired") }
+        store.createJob("f", "csv-to-qobuz", "{}", false)
+        api(store).runJob("f") { throw RuntimeException("Qobuz sign-in has expired") }
         assertEquals("failed", store.job("f")!!.status)
-        assertEquals("Spotify sign-in has expired", store.job("f")!!.error)
+        assertEquals("Qobuz sign-in has expired", store.job("f")!!.error)
 
-        store.createJob("ok", "spotify-to-qobuz", "{}", false)
+        store.createJob("ok", "csv-to-qobuz", "{}", false)
         api(store).runJob("ok") { }
         assertEquals("done", store.job("ok")!!.status)
         assertNull(store.job("ok")!!.error)
@@ -299,7 +257,7 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `a job listing carries its counts and the fields the page renders`() {
         val store = MemoryStore()
-        store.createJob("mixed", "qobuz-to-spotify", "{}", true)
+        store.createJob("mixed", "csv-to-qobuz", "{}", true)
         store.addItems("mixed", listOf(
             JobItem("track", "1", "A", "matched", targetId = "x"),
             JobItem("track", "2", "B", "unmatched", note = "gone")))
@@ -314,13 +272,13 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `cancelling a job that is not running is a 404`() {
         val store = MemoryStore()
-        store.createJob("mixed", "qobuz-to-spotify", "{}", false)
+        store.createJob("mixed", "csv-to-qobuz", "{}", false)
         assertEquals(404, post(api(store), "/api/job/mixed/cancel").status)
     }
 
     @Test fun `a job can be deleted, and takes its items with it`() {
         val store = MemoryStore()
-        store.createJob("mixed", "qobuz-to-spotify", "{}", false)
+        store.createJob("mixed", "csv-to-qobuz", "{}", false)
         store.addItems("mixed", listOf(JobItem("track", "1", "A", "matched")))
         val a = api(store)
         assertEquals(200, raw(a, "DELETE", "/api/job/mixed").status)
@@ -330,16 +288,10 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `clearing the match cache reports the new size`() {
         val store = MemoryStore()
-        store.cacheMatch("qobuz", "1", "spotify", "track", "s1", "isrc")
+        store.cacheMatch("csv", "1", "qobuz", "album", "q1", "upc")
         val j = JSONObject(post(api(store), "/api/cache/clear").body.toString(Charsets.UTF_8))
         assertEquals(true, j.getBoolean("ok"))
         assertEquals(0, j.getInt("cacheSize"))
-    }
-
-    @Test fun `a cancelled Spotify sign-in is explained rather than reported as missing`() {
-        val res = raw(api(), "GET", "/api/spotify/callback?error=access_denied")
-        assertEquals(200, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("cancelled or refused"))
     }
 
     @Test fun `the bundled page is served from the APK's own assets`() {
@@ -358,7 +310,7 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `an interrupted job is not left showing a spinner forever`() {
         val store = MemoryStore()
-        store.createJob("killed", "qobuz-to-spotify", "{}", false)
+        store.createJob("killed", "csv-to-qobuz", "{}", false)
         // Constructing the API is what sweeps orphans, exactly as starting the
         // server does on the Node side.
         val j = get(api(store), "/api/jobs").getJSONArray("jobs").getJSONObject(0)
@@ -368,46 +320,12 @@ class ApiTest : ApiFixtures() {
 
     @Test fun `progress json embedded in a job row stays parseable`() {
         val store = MemoryStore()
-        store.createJob("p", "qobuz-to-spotify", "{}", false)
+        store.createJob("p", "csv-to-qobuz", "{}", false)
         store.updateProgress("p", Progress(phase = "matching", label = "He said \"hi\"",
             done = 3, total = 10, counts = mapOf("matched" to 3)).toJson())
         val j = get(api(store), "/api/job/p")
         assertNotNull(j.getJSONObject("progress"))
         assertEquals("He said \"hi\"", j.getJSONObject("progress").getString("label"))
         assertEquals(3, j.getJSONObject("progress").getJSONObject("counts").getInt("matched"))
-    }
-    // ----------------------------------------------------------------------
-    // Regression: Spotify redirects to /login, not /api/spotify/callback. The
-    // shared community Client IDs whitelist exactly that one loopback path,
-    // and anything else is refused with "redirect_uri: Not matching
-    // configuration".
-
-    @Test fun `login is routed, not swallowed by the static fallback`() {
-        // /login is not under /api/, so without an explicit match it would be
-        // looked up as an asset called "login" and 404.
-        val res = raw(api(), "GET", "/login?error=access_denied")
-        assertEquals(200, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("cancelled or refused"))
-    }
-
-    @Test fun `the old callback path is still served`() {
-        val res = raw(api(), "GET", "/api/spotify/callback?error=access_denied")
-        assertEquals(200, res.status)
-        assertTrue(res.body.toString(Charsets.UTF_8).contains("cancelled or refused"))
-    }
-
-    @Test fun `a sign-in start hands Spotify the login redirect`() {
-        val store = MemoryStore()
-        store.putSetting("spotify.clientId", "a".repeat(32))
-        val res = raw(api(store), "GET", "/api/spotify/oauth/start")
-        assertEquals(302, res.status)
-        val location = res.headers["Location"] ?: ""
-        assertTrue("the authorize URL must carry the /login redirect, url-encoded",
-            location.contains(java.net.URLEncoder.encode(
-                "http://127.0.0.1:3380/login", "UTF-8")))
-        // And the verifier stored for the exchange must name the same URI, or
-        // the token request is rejected for a mismatched redirect_uri.
-        val pending = parseObject(store.setting("spotify.pending")!!)!!
-        assertEquals("http://127.0.0.1:3380/login", pending.str("redirectUri"))
     }
 }

@@ -37,7 +37,7 @@
       var p = job.progress || {};
       $("prog-title").textContent = isClear(job)
         ? (job.dryRun ? "Listing what would be removed" : "Removing")
-        : (job.dryRun ? "Previewing" : "Migrating");
+        : (job.dryRun ? "Previewing the import" : "Importing");
       $("prog-label").textContent = p.label || "";
       var pct = p.total ? Math.round(100 * (p.done || 0) / p.total) : 0;
       $("prog-fill").style.width = pct + "%";
@@ -99,7 +99,7 @@
     err.textContent = job.error || "";
     err.hidden = !job.error;
     $("res-csv").href = "/api/job/" + id + "/report.csv";
-    var list = !isClear(job) ? ["unmatched", "What didn't move", "Everything was matched."]
+    var list = !isClear(job) ? ["unmatched", "What was not found", "Everything was matched."]
       : job.dryRun ? ["listed", "What would be removed", "Nothing to remove."]
       : ["failed", "What could not be removed", "Everything listed was removed."];
     $("res-unmatched").textContent = list[1];
@@ -109,7 +109,7 @@
   $("res-close").addEventListener("click", function () { $("results").hidden = true; });
 
   var LABELS = {
-    matched: ["moved", "good"],
+    matched: ["matched", "good"],
     already: ["already there", ""],
     unmatched: ["not found", "warn"],
     skipped: ["skipped", ""],
@@ -199,24 +199,23 @@
   // ----------------------------------------------------------- history
 
   /**
-   * "qobuz-to-spotify" as "Qobuz → Spotify", "clear-spotify" as "Clear
-   * Spotify".
-   *
-   * Derived from the id, not a two-way guess: a guess written when there were
-   * two directions once labelled every run of a third one wrongly, on the one
-   * screen that says what a past run did.
+   * A run's kind, as the history shows it: "csv-to-qobuz" as "File → Qobuz",
+   * "clear-qobuz" as "Clear Qobuz". Runs from before 0.5.0 keep their old
+   * labels ("Qobuz → Spotify"), derived from the id the same way.
    */
   function directionLabel(d) {
-    if (/^clear-/.test(String(d || ""))) {
-      var svc = String(d).slice(6);
+    var id = String(d || "");
+    if (/^clear-/.test(id)) {
+      var svc = id.slice(6);
       return "Clear " + svc.charAt(0).toUpperCase() + svc.slice(1);
     }
-    var parts = String(d || "").split("-to-");
-    if (parts.length !== 2) return String(d || "");
+    var parts = id.split("-to-");
+    if (parts.length !== 2) return id;
     return parts.map(function (p) {
-      return p.charAt(0).toUpperCase() + p.slice(1);
+      return p === "csv" ? "File" : p.charAt(0).toUpperCase() + p.slice(1);
     }).join(" → ");
   }
+
 
   function loadHistory() {
     api("/api/jobs").then(function (j) {
@@ -254,7 +253,7 @@
         counts.className = "when spacer";
         var c = job.counts || {};
         counts.textContent = [
-          c.matched ? c.matched + " moved" : "",
+          c.matched ? c.matched + " matched" : "",
           c.unmatched ? c.unmatched + " not found" : "",
           c.listed ? c.listed + " to remove" : "",
           c.removed ? c.removed + " removed" : "",

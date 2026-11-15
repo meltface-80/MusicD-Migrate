@@ -10,9 +10,9 @@ import java.net.URLEncoder
  *
  * An interface rather than a direct call, for one reason: every test in this
  * module runs on a plain JVM with no phone, no account and no internet, and it
- * gets there by handing the clients a fake. SpotifyClientTest and
- * QobuzClientTest drive the real conversion, paging and batching code against
- * scripted responses (see FakeHttp in the tests).
+ * gets there by handing the client a fake: the client tests drive the real
+ * conversion, paging and batching code against scripted responses (see
+ * FakeHttp in the tests).
  *
  * HttpURLConnection rather than a library: :core has no dependencies at all
  * (org.json is compileOnly because Android supplies it), and one fewer thing
@@ -90,3 +90,8 @@ fun query(params: Map<String, Any?>): String =
     params.entries
         .filter { it.value != null && it.value.toString().isNotEmpty() }
         .joinToString("&") { urlEncode(it.key) + "=" + urlEncode(it.value.toString()) }
+
+/** Ids in batches of [n], blanks dropped: a blank id in a batch makes the
+ *  whole request fail for one row that was never an id. */
+internal fun chunk(list: List<String>, n: Int): List<List<String>> =
+    list.filter { it.isNotEmpty() }.chunked(n)

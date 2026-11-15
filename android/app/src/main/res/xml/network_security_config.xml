@@ -22,9 +22,9 @@
   to the two names the loopback interface answers to.
 
   That distinction matters here rather than being pedantry: this app holds
-  Qobuz and Spotify access tokens and can write to somebody's library. Its
-  calls to both services are HTTPS and stay that way, enforced, because
-  base-config still forbids cleartext.
+  a Qobuz access token and can write to somebody's library. Its calls to
+  Qobuz are HTTPS and stay that way, enforced, because base-config still
+  forbids cleartext.
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">

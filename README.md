@@ -1,21 +1,24 @@
 # Mandarin Migration
 
-An Android app that moves playlists, favourite albums, followed artists and
-favourite tracks **between Qobuz and Spotify, in either direction** — and that
-can **clear a library out**: remove every favourite track, favourite album,
-followed artist or playlist from Qobuz or Spotify.
+An Android app that takes a **library file** — an export from
+[Mandarin](https://github.com/meltface-80/Mandarin) or any other music
+software — and adds its albums to your **Qobuz favourites**. It can also
+**clear a Qobuz library out**: favourite tracks, favourite albums, followed
+artists or playlists.
 
 Everything runs on the phone. The app serves its own page from a loopback
-HTTP server inside the same process and shows it in a WebView: no server, no
-Docker, nothing else running.
+HTTP server inside the same process and shows it in a WebView: no server,
+nothing else running.
 
-*(Formerly MusicD Migrate; the repository keeps its old name.)*
+*(Formerly MusicD Migrate; the repository keeps its old name. Spotify was
+removed in 0.5.0 and Roon and the Docker build in 0.4.0 — it is Qobuz only
+until decided otherwise.)*
 
-> **Upgrading from MusicD Migrate: uninstall it first.** 0.4.0 is signed with
-> a new key — the original one was not kept — and Android will not install an
+> **Upgrading from MusicD Migrate (0.3.x or earlier): uninstall it first.**
+> From 0.4.0 the app is signed with a new key, and Android will not install an
 > update whose signing key changed. Uninstall MusicD Migrate, install Mandarin
-> Migration, and sign in to Qobuz and Spotify again. This happens once: every
-> update after this one installs over the top.
+> Migration, and sign in to Qobuz again. From 0.4.0 on, updates install over
+> the top.
 
 ---
 
@@ -24,47 +27,78 @@ Docker, nothing else running.
 **Qobuz has no public API.** This app uses the same unofficial one that every
 open-source Qobuz client and the Lyrion/LMS "Qobuz" plugin use. That is
 **against Qobuz's terms of service**, it can stop working without notice, and
-you use it at your own risk. The Spotify side is the official Web API.
+you use it at your own risk.
 
-**It writes to your library.** A migration only ever adds — it creates
-playlists and favourites, never deletes — and it is safe to run twice. A
-**clear-out removes, and cannot be undone**: neither service keeps a copy. Both
-start as a **preview**, which is the default, and a clear-out will not run
-until you have previewed it and typed the service's name.
+**It writes to your library.** An import only ever adds favourites and is safe
+to run twice. A **clear-out removes, and cannot be undone**: Qobuz keeps no
+copy. Both start as a **preview**, which is the default, and a clear-out will
+not run until you have previewed it and typed "Qobuz".
 
 ---
 
-## What moves
+## Importing a library file
 
-| | |
-|---|---|
-| **Playlists** | Created on the other service with the same name and the tracks in the same order. Pick which ones. |
-| **Favourite albums** | Matched by barcode where both services have one, then by title, artist and track listing. |
-| **Followed artists** | Matched on an exact name. |
-| **Favourite tracks** | Matched by ISRC, then by title, artist and duration. |
+1. **Export your library** as a CSV. Mandarin's export (when it has one) and
+   most music software can do this. One row per track, with the album's
+   barcode where the tags have it, gives by far the best results. The exact
+   format is in **[docs/library-csv.md](docs/library-csv.md)**.
+2. On the phone, open the **Import a library file** card and **Choose a
+   file…**. The app reads it and shows what it found before anything is looked
+   up: how many albums, how many with a barcode, how many with a track listing,
+   which columns it used and which it ignored, and any warnings (rows it
+   skipped, barcodes a spreadsheet mangled).
+3. **Preview.** Every album is looked for on Qobuz and nothing is written. The
+   result is the real answer, not an estimate. **What was not found** lists
+   every album that did not match, with the reason.
+4. Untick **Preview first** under *Options* and press **Import**. Matched
+   albums are added to your Qobuz favourite albums; ones already there are
+   skipped. Download the full report as a CSV if you want to work through the
+   misses.
 
-Both directions. The two service clients implement one interface, so
-"Qobuz → Spotify" and "Spotify → Qobuz" are the same migration with the source
-and destination swapped.
+The file is held in memory until you import it or choose another. If Android
+reclaims the app in between, choose it again.
 
-### What does *not* move
+### How an album is matched
 
-* **Play counts, dates added, playlist artwork and playlist descriptions.**
-  Neither API offers a way to set most of these.
-* **Local files in a Spotify playlist.** They exist only on that machine.
-  Reported as skipped, by name.
-* **Podcast episodes.** Not music, and there is nothing to match them to.
-* **Anything the other service does not have.** Reported, with the reason.
+This is the one thing in the app that can be wrong in a way you would not
+notice: an import that quietly favourited the live album, a different edition
+or a covers band's record **looks like it worked**. So the rule is: **where the
+evidence is not decisive, it matches nothing and says why.**
+
+1. **Barcode.** The album's UPC/EAN, searched for on Qobuz. The same code means
+   the same release.
+2. **Title, artist and track listing.** With no barcode, a title and an artist
+   are not enough: "Greatest Hits" by almost anybody is several different
+   records. The candidate must also contain at least **70% of the tracks you
+   own** (by title, ignoring "- Remastered"-style suffixes). A deluxe edition
+   containing all of your standard one is accepted, and the report says which
+   edition you got.
+3. **Nothing else.** An album with no barcode *and* no track listing in the
+   file is not searched for at all, and the report says so. There is no "best
+   guess" tier, because a best guess is indistinguishable from a real match once
+   it is in your favourites.
+
+Every refusal carries its reason, and the reasons differ on purpose. "The
+closest that artist has is X" means you own a different edition. "Nothing
+called that" means it is not on Qobuz.
+
+**Only certain matches** (under *Options*) accepts barcode matches and nothing
+else. **Check an album's track listing** is on by default. Turning it off lets
+a barcode-less album match on title and artist alone, which is weaker evidence.
+
+Lookups are cached, including the misses, so importing the same file again is
+fast. **Forget cached lookups** clears that, for when Qobuz's catalogue has
+changed.
 
 ---
 
 ## Clearing a library
 
-The **Clear a library** card empties one service — to start again, or to clean
-up before migrating into it. Pick **Qobuz** or **Spotify**, then tick any of:
+The **Clear a library** card empties your Qobuz library — to start again, or to
+clean up before importing into it. Tick any of:
 
-* **Favourite tracks** (Spotify: *Liked Songs*)
-* **Favourite albums** (Spotify: saved albums)
+* **Favourite tracks**
+* **Favourite albums**
 * **Followed artists**
 * **Playlists** — the ones **you made are deleted**. Ones you merely
   **follow are left alone** unless you also tick *Also unfollow playlists you
@@ -81,90 +115,12 @@ Nothing is ticked to begin with, and it happens in three steps:
    you preview again. The name is checked by the app's server as well as by the
    page, so nothing else can trigger a removal.
 
-Removals go in batches (fifty at a time; twenty for Spotify albums) with a row
+Removals go in batches of fifty with a row
 per item in the report: *removed*, or *failed* with the service's own reason.
 A failed batch does not stop the rest, but if the service refuses the first
 few batches outright, or the sign-in has expired, the run stops and says why
 rather than painting your whole library red. Stopping part-way leaves
 everything already removed removed; run it again to finish.
-
----
-
-## The part that matters: how it decides two tracks are the same
-
-This is the only thing in the app that can be wrong in a way you would not
-notice. A migration that fails is obvious and you can fix it. A migration that
-quietly put the karaoke version, the radio edit or a covers band into your
-playlist **looks like it worked**, and you find out months later.
-
-So the rule is: **where the evidence is not decisive, it matches nothing and
-tells you why.**
-
-Three tiers, and they are not interchangeable:
-
-1. **ISRC** — the recording's own identifier. The same code on both services
-   means the same master of the same performance. This tier needs no
-   corroboration, and it is why both clients ask for ISRCs on every read.
-   Albums use their **barcode** the same way, and are searched by it: Spotify's
-   album search does not return barcodes at all, so the barcode has to be the
-   thing you search *for* rather than something you compare afterwards.
-2. **Exact** — titles agree character for character once normalised, the
-   artists overlap, *and* the durations agree within 5 seconds. Three
-   independent facts.
-3. **Close** — titles agree only after an *edition* suffix is removed
-   (`- 2011 Remaster`, `(Deluxe Edition)`). Weaker evidence, so the duration
-   gate tightens to 3 seconds.
-
-Below that there is no "best guess" tier, because a best guess is
-indistinguishable from a real match once it is in a playlist.
-
-**A suffix that names a different recording is never stripped.** `(Live)`,
-`(Acoustic)`, `(Radio Edit)`, `(Someone Remix)`, `- Extended Mix`, `(Demo)` —
-those are different performances, and matching through them is exactly the
-failure the tiers exist to prevent. `(Remastered)` is the same performance, so
-that one is.
-
-Five seconds rather than two, incidentally, because the two services encode
-from different deliveries and trim silence differently: a 3–4 second gap for an
-identical recording is ordinary. A radio edit is 60–90 seconds shorter and a
-live take minutes longer, so the gate still catches what it is for.
-
-There is a **Only certain matches** option that accepts ISRC matches and
-nothing else. Fewer records move; every one that does is certainly the same
-recording.
-
-### The report is the output
-
-The useful result of a migration is not "done" — it is the list of records that
-did **not** come across, and what to do about each. Every refusal carries its
-reason, and the reasons distinguish the cases that need different things from
-you:
-
-> *"Glory Box (Live at Roseland)" is 312s there and 298s here — more than 5s
-> apart, so a different recording*
-> — you own a different edition; findable by hand in a minute.
-
-> *nothing called "Untitled Demo" by that artist on the other service*
-> — it is not there; nothing will fix it.
-
-> *"Teardrop" is there but credited to a different artist — likely a cover, so
-> it was not taken*
-> — deliberately refused.
-
-Download the lot as a CSV and work through it.
-
-### An album with no barcode
-
-Qobuz and Spotify both hand over a barcode, which identifies a release
-outright, and albums are searched *by* it. When one side has none, title and
-artist are all there is — and they are not enough. "Greatest Hits" by almost
-anybody is several different records. So the album's **own track listing**
-carries the decision: a candidate must match on title and artist *and* share
-at least 70% of the tracks you own, or it is refused and the report says how
-many it did share. A deluxe edition is accepted for the standard one you own —
-it contains all of it — and the report says which edition you got.
-
----
 
 ---
 
@@ -176,18 +132,19 @@ source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
 version is built.)
 
+— open it on the phone and Android will ask you to allow installing from that
+source once.
+
 `dist/latest.json` carries the version and the APK's SHA-256 if you want to
 check the download.
 
-The `apk` job in CI rebuilds and republishes the file whenever `versionName`
-is bumped, signed with the same key, so updates install over the top. That
-needs the keystore in the repository secrets — see
-[Signing the APK](#signing-the-apk).
+The `apk` job in CI rebuilds, signs and republishes the file whenever
+`versionName` is bumped, so updates install over the top.
 
-It runs as a foreground service with an ongoing notification while a
-migration or a clear-out is working — and only then. That is not decoration:
-a real library takes minutes, you will lock your phone during it, and a plain
-activity's process is killable the moment it leaves the screen.
+It runs as a foreground service with an ongoing notification while an import
+or a clear-out is working — and only then. A real library takes minutes, you
+will lock your phone during it, and a plain activity's process is killable the
+moment it leaves the screen.
 
 ### Building it yourself
 
@@ -198,20 +155,8 @@ ANDROID_HOME=/path/to/sdk ./gradlew :app:assembleRelease
 
 Needs JDK 17 and the Android SDK (platform 36, build-tools 36). With no signing
 key configured this produces `app-release-unsigned.apk`, which **will not
-install** — see below.
-
-To get something you can put on a phone right now, build the debug variant
-instead. It is auto-signed with the local debug keystore:
-
-```bash
-cd android
-ANDROID_HOME=/path/to/sdk ./gradlew :app:assembleDebug
-# app/build/outputs/apk/debug/app-debug.apk
-```
-
-Fine for trying it. Not fine for keeping: the debug key is per-machine, so a
-later release-signed build cannot install over it and you would have to
-uninstall first.
+install** — see below. `./gradlew :app:assembleDebug` gives a debug-signed APK
+you can try, but a release build cannot later install over it.
 
 ---
 
@@ -295,88 +240,26 @@ a notice rather than failing — it is a guard, not a prerequisite.
 
 ---
 
-## Signing in
-
-### Qobuz — nothing to set up
+## Signing in to Qobuz
 
 Press **Sign in with Qobuz**. You sign in on qobuz.com in your browser and it
 sends you back. No password is typed into this app and none passes through it.
 
 There is an email-and-password fallback for when the redirect cannot get back
 to the app. It is the fallback on purpose: the password is hashed before it is
-sent, the way Qobuz's API wants it, and the plaintext is never stored — but the
-redirect is still better, because this app never sees anything at all.
-
-### Spotify — a Client ID is built in
-
-Spotify will not issue tokens to an application it does not know, so sign-in
-needs a **Client ID**. There is no client secret: sign-in uses PKCE, which
-exists precisely for apps that cannot keep one.
-
-> **⚠️ Spotify has frozen new app registrations.** Since early 2026 the
-> **Create app** button on the developer dashboard has been greyed out —
-> *"New integrations are currently on hold"* — and Spotify has given no
-> timeline.
-
-So this build **ships with one filled in**: a well-known id from the
-open-source Spotify world. Know what that means — the consent screen names
-*that* application rather than this one, and your requests count against its
-quota. The [appendix](#appendix-the-client-id-this-build-signs-in-with) says
-exactly whose it is and what it costs.
-
-**If you have a Spotify app of your own**, from anything at all, prefer it —
-only new registrations are frozen:
-
-1. Open [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
-   and pick the app.
-2. **Settings → Edit → Redirect URIs**: add `http://127.0.0.1:3380/login` (the
-   app shows it on its Spotify card). Save.
-3. Paste the **Client ID** into the app and press **Save**. A saved id always
-   wins over the built-in one.
-
-The redirect path is `/login` rather than anything more descriptive because
-the shared community ids whitelist exactly that one loopback path; anything
-else gets `redirect_uri: Not matching configuration` before you can sign in.
-On the phone the redirect itself is never a problem: the app's server *is* on
-`127.0.0.1`, the one address Spotify accepts over plain http.
-
-Sign-ins open in your **real browser**, never in the app's WebView — a WebView
-does not share the browser's cookies, and typing a password into a window this
-app controls is exactly what the redirect flow exists to avoid.
-
----
-
-## Running a migration twice is fine
-
-This is designed for it, because the second run is the common one — you buy
-records and migrate again.
-
-* **Favourites** are idempotent: both services' "save" endpoints are.
-* **Playlists**: a second run finds the playlist it made last time and adds
-  only what is missing. (Changeable: make another one, or leave it alone.)
-* **A migration never deletes or unfollows anything.** Only a clear-out does,
-  and only when asked as described above.
-
-And it is fast the second time. The expensive part of a migration is not
-writing, it is *looking up*: a 2,000-track library is up to 4,000 searches
-against a rate-limited API, where the writes are about 40 requests. So every
-lookup is cached — **including the misses** — and a re-run of the same
-migration does almost no network work at all. **Forget cached lookups** in the
-app clears it, for when a service's catalogue has changed and a previous "not
-available" is worth retrying.
+sent, the way Qobuz's API wants it, and the plaintext is never stored.
 
 ---
 
 ## Who can reach it
 
 **The app's server binds `127.0.0.1` and there is deliberately no switch to
-widen it.** Behind that socket are two services' access tokens and the ability
-to write to — and now empty — your library. Nothing else on your network has
-any reason to reach it.
+widen it.** Behind that socket are your Qobuz sign-in and the ability to write
+to — and empty — your library.
 
-Android's automatic backup is **off**. The database holds access tokens, and
-copying those to cloud storage and restoring them onto a different device is
-not something anyone asked for when they signed in on this phone.
+Android's automatic backup is **off**. The database holds an access token, and
+copying it to cloud storage and restoring it onto a different device is not
+something anyone asked for when they signed in on this phone.
 
 ---
 
@@ -384,9 +267,9 @@ not something anyone asked for when they signed in on this phone.
 
 ```
  ┌──────────────────────────────────────────┐
- │ MainActivity — a WebView                 │
- │   public/ (index.html, app.js, run.js,   │
- │            clear.js) — bundled as-is     │
+ │ MainActivity — a WebView (+ FilePicker)  │
+ │   public/ — index.html, app.js,          │
+ │   import.js, run.js, clear.js — as-is    │
  └────────────────────┬─────────────────────┘
                       │ /api/… over http://127.0.0.1
  ┌────────────────────▼─────────────────────┐
@@ -394,17 +277,18 @@ not something anyone asked for when they signed in on this phone.
  │   HttpServer → MigrateApi                │
  │                                          │
  │ :core — the decisions, all unit-tested   │
+ │   Csv  CsvLibrary   (the file → albums)  │
  │   Canon  Match  Tracklist  TitleTags     │
  │   Migration  Lookups  Writes  Clearance  │
- │   SpotifyClient  QobuzClient             │
+ │   QobuzClient  QobuzOAuth                │
  └────────────────────┬─────────────────────┘
                       │
-                SqliteStore (sign-ins, match cache, job history)
+                SqliteStore (sign-in, match cache, job history)
 ```
 
-Nothing that makes a decision lives in the Android module: it is a WebView, a
-service and SQLite. Everything that could be wrong is in `:core`, a plain
-Kotlin/JVM module tested without a phone, a network or an account.
+Nothing that makes a decision lives in the Android module. Everything that
+could be wrong is in `:core`, a plain Kotlin/JVM module tested without a phone,
+a network or an account.
 
 ---
 
@@ -414,82 +298,29 @@ Kotlin/JVM module tested without a phone, a network or an account.
 npm run check        # all of the below, in order
 ```
 
-which is:
-
 ```bash
 for f in public/*.js; do node --check "$f"; done
 npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the point
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 207 tests
+cd android && ./gradlew :core:test                          # 193 tests
 ```
 
-No suite needs a Qobuz or Spotify account: the service clients are driven by a
-fake HTTP layer and the migration and clear-out engines by fake services
-implementing the same interface.
-
 `ContractTest` reads the page's scripts and fails when a route the page calls
-is not served, or an option the page sends — including a clear-out's
-`dryRun` and `confirm` — is never read by the server. It also fails if
-`optString` appears outside `Json.kt`: Android's `org.json` returns the
-**literal string `"null"`** for a JSON null, and every JVM test is blind to it.
+is not served, or an option it sends is never read by the server. That covers
+a clear-out's `dryRun` and `confirm`, for example.
 
 ### What is not tested
 
-**The removal endpoints have not been run against a real account.** Spotify's
-are its documented `DELETE` calls; Qobuz's `favorite/delete` is the call the
-owner's Mandarin server uses for albums, and `playlist/delete` /
-`playlist/unsubscribe` are from Qobuz's own (old) API documentation. The tests
-pin exactly what is sent; whether each service still accepts it is something
-the first real preview-then-remove will show — try it on a playlist or two
-first.
-
-`MainActivity` and `MigrateService` — the WebView and the foreground service —
-have nothing but the compiler behind them. There are no instrumentation tests.
-Everything underneath them, including the HTTP server and the whole route
-table, is exercised on a JVM over a real socket.
-
----
-
-## Appendix: the Client ID this build signs in with
-
-This is **baked in**, because Spotify has frozen new registrations and a setup
-step nobody can complete is an unusable app. It is the owner's decision for the
-owner's own install, taken with all of the below understood.
-
-```
-d420a117a32841c2b3474932e49fb54b
-```
-
-`Pkce.DEFAULT_CLIENT_ID` in `android/core/…/Pkce.kt`; `ContractTest` fails if
-it and this appendix ever disagree, because this is where you look when a
-sign-in stops working.
-
-What it is, plainly:
-
-* **It is not registered to Mandarin Migration.** It comes from the open-source
-  Spotify world, which has long shared a well-known id among its users because
-  Spotify will not issue new ones. It works here for exactly one reason: the
-  loopback path `/login` is whitelisted on it, which is why this app's redirect
-  path is `/login` and not `/api/spotify/callback`.
-* **The consent screen will name that application, not this one**, and the
-  requests count against its quota. If it is ever rate-limited or withdrawn,
-  the Spotify half of this app stops working and there is nothing to be done
-  about it from here. That is the trade for being able to sign in at all.
-* **It is a fallback, never an override.** A saved id always wins: paste your
-  own into the **Spotify Client ID** field and this one is never used again.
-  It is resolved in one place — saved, else built-in — because a fallback
-  applied at three sites out of four is a sign-in that begins as one
-  application and ends as another.
-* **It is not a secret.** Sign-in uses PKCE, there is no client secret, and a
-  client id travels in the query string of the authorise URL in plain sight
-  every time anyone signs in to anything. Writing it down changes nothing about
-  who can see it.
-
-**If you fork this**, put your own id in that constant, or clear it to go
-back to asking the user — the page still has the field, the Save
-button and the instructions for registering one.
+- **The file picker on a phone.** `FilePicker` hands the WebView a picked file,
+  and nothing but the compiler stands behind it. The page and the server were
+  driven end to end in a desktop browser, with a fake Qobuz behind the real
+  route table: choose a file, read the summary, preview, import, report.
+- **Against a real Qobuz account:** the import's searches and favourite
+  writes, and the clear-out's removal endpoints. The tests pin exactly what is
+  sent. Preview first, and try a clear-out on a playlist or two before
+  emptying anything.
 
 ---
 
@@ -500,7 +331,7 @@ released under the MIT License — the full text is in [LICENSE](LICENSE). In
 short: do what you like with it, as long as the copyright notice and the licence
 travel with it. It comes with no warranty.
 
-The Qobuz sign-in in `android/core/…/Pkce.kt` is ported from
+The Qobuz sign-in in `android/core/…/QobuzOAuth.kt` is ported from
 [MusicD Remote](https://github.com/meltface-80/MusicD-Remote), and
 `android/core/…/http/HttpServer.kt` is adapted from
 [MusicD Remote Lite](https://github.com/meltface-80/Android-Random-Remote) —

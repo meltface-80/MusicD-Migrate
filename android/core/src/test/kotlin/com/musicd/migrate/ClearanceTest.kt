@@ -76,11 +76,11 @@ class ClearanceTest {
     }
 
     @Test fun `removals are batched so one batch is one request`() {
-        val svc = library(tracks = 120, albums = 45, artists = 0)
+        val svc = library(tracks = 120, albums = 105, artists = 0)
         run(svc, ClearOptions(doTracks = true, doAlbums = true, dryRun = false))
         assertEquals(listOf(50, 50, 20),
             svc.removeCalls.filter { it.first == "tracks" }.map { it.second.size })
-        assertEquals(listOf(20, 20, 5),
+        assertEquals(listOf(50, 50, 5),
             svc.removeCalls.filter { it.first == "albums" }.map { it.second.size })
     }
 

@@ -4,7 +4,6 @@ import com.musicd.migrate.*
 import com.musicd.migrate.http.Assets
 import com.musicd.migrate.http.Request
 import com.musicd.migrate.http.Response
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -18,9 +17,13 @@ import java.util.concurrent.Executors
  * for — so every shape built here was taken from app.js, and ContractTest
  * checks that every route and option the page sends is served and read here.
  *
- * ONE JOB AT A TIME, a migration or a clear-out: two at once would race on
- * the match cache, double the request rate into two rate-limited services,
- * and produce two progress bars for one library.
+ * ONE JOB AT A TIME, an import or a clear-out: two at once would race on the
+ * match cache, double the request rate into a rate-limited service, and
+ * produce two progress bars for one library.
+ *
+ * QOBUZ ONLY since 0.5.0. Spotify was removed at the owner's request; the
+ * engine underneath is still service-neutral (MusicSource / MusicTarget), so
+ * bringing a service back is a client and a sign-in, not a rewrite.
  */
 class MigrateApi(
     private val store: Store,
@@ -79,11 +82,6 @@ class MigrateApi(
     private fun route(req: Request): Response {
         val p = req.path
 
-        // Spotify's redirect target, which is NOT under /api/ — so it has to be
-        // matched before the static fallback or it would 404 looking for a file
-        // called "login". See Pkce.CALLBACK_PATH for why the path is /login.
-        if (p == Pkce.CALLBACK_PATH) return signIns.spotifyCallback(req)
-
         if (!p.startsWith("/api/")) return static(req)
 
         return when {
@@ -95,17 +93,8 @@ class MigrateApi(
             p == "/api/qobuz/login" -> signIns.qobuzLogin(req)
             p == "/api/qobuz/signout" -> { store.deleteSetting("qobuz.session"); ok() }
 
-            p == "/api/spotify/client-id" -> signIns.saveSpotifyClientId(req)
-            p == "/api/spotify/oauth/start" -> signIns.spotifyStart(req)
-            p == Pkce.LEGACY_CALLBACK_PATH -> signIns.spotifyCallback(req)
-            p == "/api/spotify/paste" -> signIns.spotifyPaste(req)
-            p == "/api/spotify/signout" -> {
-                store.deleteSetting("spotify.session")
-                store.deleteSetting("spotify.pending")
-                ok()
-            }
-
-            p == "/api/playlists" -> playlists(req)
+            p == "/api/import/file" && req.method == "POST" -> importFile(req)
+            p == "/api/import/forget" && req.method == "POST" -> { imported = null; ok() }
             p == "/api/migrate" && req.method == "POST" -> migrate(req)
             p == "/api/clear" && req.method == "POST" -> clear(req)
             p == "/api/jobs" -> jobsList()
@@ -159,19 +148,13 @@ class MigrateApi(
 
     private fun state(req: Request): Response {
         val q = signIns.qobuzSession()
-        val sp = signIns.spotifySession()
-        val redirect = signIns.callbackUrlFrom(req, Pkce.CALLBACK_PATH)
-        val check = Pkce.checkRedirectUri(redirect)
         return Response.json(200, buildString {
             append("{")
             append("\"qobuz\":{\"signedIn\":").append(q != null)
             append(",\"name\":").append(jsonQuote(q?.name.orEmpty())).append("},")
-            append("\"spotify\":{\"signedIn\":").append(sp != null)
-            append(",\"name\":").append(jsonQuote(sp?.name.orEmpty()))
-            append(",\"clientId\":").append(jsonQuote(signIns.spotifyClientId()))
-            append(",\"redirectUri\":").append(jsonQuote(redirect))
-            append(",\"redirectCheck\":{\"ok\":").append(check.ok)
-            append(",\"reason\":").append(jsonQuote(check.reason)).append("}},")
+            // The library file waiting to be imported, or null. Held in
+            // memory only: if Android reclaims the process, choose it again.
+            append("\"import\":").append(imported?.summary?.toJson() ?: "null").append(",")
             append("\"cacheSize\":").append(store.matchCacheSize()).append(",")
             append("\"job\":")
             val jid = currentJobId
@@ -203,106 +186,90 @@ class MigrateApi(
 
     // ------------------------------------------------------------- library
 
-    /** Every direction this app will run, and which service is which end. */
-    private val DIRECTIONS = mapOf(
-        "qobuz-to-spotify" to ("qobuz" to "spotify"),
-        "spotify-to-qobuz" to ("spotify" to "qobuz")
-    )
-
     /**
      * A client for one service, or a refusal saying what is missing.
      *
      * Throws rather than returning null so the caller cannot forget to check:
-     * the message is what the user is shown, and "Sign in to Spotify first" is
+     * the message is what the user is shown, and "Sign in to Qobuz first" is
      * more use than a 500.
      */
     private fun targetFor(name: String): MusicTarget = when (name) {
         "qobuz" -> signIns.qobuzClient() ?: throw RuntimeException("Sign in to Qobuz first.")
-        "spotify" -> signIns.spotifyClient() ?: throw RuntimeException("Sign in to Spotify first.")
         else -> throw RuntimeException("Unknown service: $name")
     }
 
-    private fun playlists(req: Request): Response {
-        val which = req.param("service").orEmpty()
-        val client: MusicTarget? = when (which) {
-            "qobuz" -> signIns.qobuzClient()
-            "spotify" -> signIns.spotifyClient()
-            else -> null
-        } ?: return Response.json(400, obj("error" to "Not signed in to $which."))
+    /** The library file uploaded and parsed, waiting to be imported. */
+    @Volatile private var imported: CsvLibrary? = null
 
+    /**
+     * Take a library file (the request body, as the page read it from disk)
+     * and parse it, answering with what was found — before anything is
+     * searched for, so the user sees "812 albums, 610 with a barcode" and any
+     * warning while they can still pick a different file.
+     *
+     * Streamed into the parser from the request bytes: a track-per-row export
+     * of a big library is tens of megabytes, and holding it as a String too
+     * would double that on a 256MB heap.
+     */
+    private fun importFile(req: Request): Response {
+        if (current != null) {
+            return Response.json(409, obj("error" to "Wait for the current run to finish."))
+        }
+        val name = req.param("name").orEmpty().ifEmpty { "library.csv" }.take(200)
         return try {
-            if (client!!.accountId.isEmpty()) client.me()
-            val mine = client.accountId
-            Response.json(200, "{\"playlists\":" + client.playlists().joinToString(",", "[", "]") {
-                buildString {
-                    append("{\"id\":").append(jsonQuote(it.id))
-                    append(",\"name\":").append(jsonQuote(it.name))
-                    append(",\"description\":").append(jsonQuote(it.description))
-                    append(",\"public\":").append(it.isPublic)
-                    append(",\"ownerId\":").append(jsonQuote(it.ownerId))
-                    append(",\"trackCount\":").append(it.trackCount)
-                    append(",\"mine\":").append(it.ownerId.isEmpty() || it.ownerId == mine)
-                    append("}")
-                }
-            } + "}")
-        } catch (e: AuthError) {
-            Response.json(401, obj("error" to e.message.orEmpty()))
-        } catch (e: Exception) {
-            Response.json(502, obj("error" to (e.message ?: "The service did not answer.")))
+            val lib = CsvLibrary.parse(java.io.ByteArrayInputStream(req.body), name)
+            imported = lib
+            Response.json(200, lib.summary.toJson())
+        } catch (e: CsvError) {
+            Response.json(400, obj("error" to (e.message ?: "That file could not be read.")))
         }
     }
 
     // ------------------------------------------------------------------ jobs
 
+    /**
+     * Import the uploaded library file's albums into Qobuz favourites.
+     *
+     * The migration engine does the work, with the file as its SOURCE: every
+     * album goes through the same lookups and the same Match rules a
+     * streaming service's would. Albums only, at the owner's decision.
+     *
+     * A preview is what an absent `dryRun` means here, as for a clear-out: an
+     * import writes to somebody's library, and the safe default is to show
+     * what it would do.
+     */
     private fun migrate(req: Request): Response {
         if (current != null) {
-            return Response.json(409, obj("error" to "A migration is already running."))
+            return Response.json(409, obj("error" to "Something is already running."))
         }
         val b = parseObject(req.bodyText) ?: JSONObject()
-        val asked = b.str("direction")
-        val direction = if (DIRECTIONS.containsKey(asked)) asked else "qobuz-to-spotify"
-        val (fromName, toName) = DIRECTIONS.getValue(direction)
-
-        val source: MusicSource
-        val target: MusicTarget
-        try {
-            source = targetFor(fromName)
-            target = targetFor(toName)
+        val direction = b.str("direction").ifEmpty { IMPORT_DIRECTION }
+        if (direction != IMPORT_DIRECTION) {
+            return Response.json(400, obj("error" to "This version imports a library file " +
+                "into Qobuz and nothing else; \"$direction\" is not offered any more."))
+        }
+        val source = imported
+            ?: return Response.json(400, obj("error" to "Choose a library file first."))
+        val target = try {
+            targetFor("qobuz")
         } catch (e: Exception) {
             return Response.json(400, obj("error" to (e.message ?: "Not signed in.")))
         }
-
-        // `playlists` is either a boolean or an array of ids — the page sends
-        // both shapes, so both are read here.
-        val plField = b.opt("playlists")
-        val doPlaylists: Boolean
-        val playlistIds: List<String>?
-        when (plField) {
-            is JSONArray -> { doPlaylists = true; playlistIds = plField.strings() }
-            is Boolean -> { doPlaylists = plField; playlistIds = null }
-            else -> { doPlaylists = false; playlistIds = null }
-        }
-
-        val onExisting = b.str("onExisting").let {
-            if (it in listOf("add-missing", "create-new", "skip")) it else "add-missing"
-        }
-
         val options = MigrationOptions(
-            playlistIds = playlistIds,
-            doPlaylists = doPlaylists,
-            doAlbums = b.optBoolean("albums", false),
-            doArtists = b.optBoolean("artists", false),
-            doTracks = b.optBoolean("tracks", false),
-            dryRun = b.optBoolean("dryRun", false),
+            doPlaylists = false,
+            doAlbums = b.optBoolean("albums", true),
+            doArtists = false,
+            doTracks = false,
+            dryRun = b.optBoolean("dryRun", true),
             strict = b.optBoolean("strict", false),
             // Default ON, so an absent field means corroborate: an older page
             // gets the safer behaviour rather than the title-only match.
             corroborate = b.optBoolean("corroborate", true),
-            onExisting = onExisting,
-            includeOthersPlaylists = b.optBoolean("includeOthersPlaylists", false),
-            playlistSuffix = b.str("playlistSuffix").take(40),
             concurrency = b.intOrNull("concurrency") ?: 4
         )
+        if (!options.doAlbums) {
+            return Response.json(400, obj("error" to "Nothing to import was chosen."))
+        }
 
         val jobId = UUID.randomUUID().toString()
         store.createJob(jobId, direction, req.bodyText, options.dryRun)
@@ -318,7 +285,7 @@ class MigrateApi(
      * is what an absent `dryRun` means, and a real run is refused unless
      * `confirm` carries the service's name — the same word the page makes the
      * user type. So a stale page, a double tap or any other request that did
-     * not come from somebody who read the preview and typed "Spotify" cannot
+     * not come from somebody who read the preview and typed "Qobuz" cannot
      * remove anything.
      */
     private fun clear(req: Request): Response {
@@ -327,8 +294,8 @@ class MigrateApi(
         }
         val b = parseObject(req.bodyText) ?: JSONObject()
         val service = b.str("service")
-        if (service != "qobuz" && service != "spotify") {
-            return Response.json(400, obj("error" to "Say which library to clear."))
+        if (service != "qobuz") {
+            return Response.json(400, obj("error" to "Only a Qobuz library can be cleared."))
         }
         val options = ClearOptions(
             doTracks = b.optBoolean("tracks", false),
@@ -458,5 +425,10 @@ class MigrateApi(
     fun shutdown() {
         current?.cancel()
         jobs.shutdownNow()
+    }
+
+    companion object {
+        /** The one direction there is: a library file into Qobuz. */
+        const val IMPORT_DIRECTION = "csv-to-qobuz"
     }
 }

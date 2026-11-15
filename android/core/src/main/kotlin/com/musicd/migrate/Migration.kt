@@ -217,6 +217,10 @@ class Migration(
                 existing.albumKey.contains(albumKey(a))) {
                 log.record(JobItem("album", a.id, label, "already",
                     note = "already a favourite there"))
+            } else if (options.corroborate && source.unmatchable(a) != null) {
+                // Not enough evidence in the source to try: see unmatchable.
+                log.record(JobItem("album", a.id, label, "unmatched",
+                    note = source.unmatchable(a)))
             } else {
                 val r = lookups.resolveAlbum(a)
                 if (r.id != null) {

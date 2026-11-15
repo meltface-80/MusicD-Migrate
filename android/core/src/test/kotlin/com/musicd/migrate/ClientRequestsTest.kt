@@ -6,44 +6,15 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
-import org.json.JSONObject
 
-
-/** What the clients actually send: write and removal batching, paging, the
- *  barcode search and an album's track listing. */
+/** What the Qobuz client actually sends: write and removal batching, paging,
+ *  the barcode search and an album's track listing. */
 class ClientRequestsTest {
 
-    private fun liveSession() = SpotifySession(
-        clientId = "cid", accessToken = "tok", refreshToken = "ref",
-        expiresAt = System.currentTimeMillis() + 600_000, userId = "me")
-
+    private fun qobuz(http: Http) =
+        QobuzClient(QobuzSession(token = "t", userId = "1"), http, sleeper = {})
 
     // ------------------------------------------------------ write batching
-
-    @Test fun `Spotify playlist writes batch at 100 and use track URIs`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
-        SpotifyClient(liveSession(), http, sleeper = {})
-            .addToPlaylist("pl", (0 until 250).map { "t$it" })
-        assertEquals("250 tracks is three requests, not 250", 3, http.calls.size)
-        val first = JSONObject(http.calls[0].body!!)
-        assertEquals(100, first.getJSONArray("uris").length())
-        assertEquals("spotify:track:t0", first.getJSONArray("uris").getString(0))
-    }
-
-    @Test fun `Spotify saved-track writes batch at 50`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
-        SpotifyClient(liveSession(), http, sleeper = {})
-            .saveTracks((0 until 120).map { "t$it" })
-        assertEquals(3, http.calls.size)
-        assertEquals(50, JSONObject(http.calls[0].body!!).getJSONArray("ids").length())
-    }
-
-    @Test fun `following artists puts the ids in the query, where Spotify wants them`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
-        SpotifyClient(liveSession(), http, sleeper = {}).followArtists(listOf("a1", "a2"))
-        assertTrue(http.calls[0].url.contains("ids=a1%2Ca2"))
-        assertTrue(http.calls[0].url.contains("type=artist"))
-    }
 
     @Test fun `Qobuz writes batch at 50 and go in the query string`() {
         val http = FakeHttp(listOf(FakeHttp.res(200, """{"status":"success"}""")))
@@ -56,9 +27,9 @@ class ClientRequestsTest {
 
     @Test fun `empty write lists send no requests at all`() {
         val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
-        val sp = SpotifyClient(liveSession(), http, sleeper = {})
-        sp.saveTracks(emptyList())
-        sp.saveAlbums(listOf(""))
+        val qz = qobuz(http)
+        qz.saveTracks(emptyList())
+        qz.saveAlbums(listOf(""))
         assertEquals(0, http.calls.size)
     }
 
@@ -67,53 +38,6 @@ class ClientRequestsTest {
     // The clear-out's requests. Each one is the mirror image of a save, and
     // each is asserted on its METHOD as well as its path: a removal sent as a
     // PUT is a save, and would quietly do the opposite of what was asked.
-
-    @Test fun `Spotify removes saved tracks with a DELETE, fifty ids at a time, in the query`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "")))
-        SpotifyClient(liveSession(), http, sleeper = {})
-            .unsaveTracks((0 until 120).map { "t$it" })
-        assertEquals("120 tracks is three requests", 3, http.calls.size)
-        for (c in http.calls) {
-            assertEquals("DELETE", c.method)
-            assertTrue(c.url, c.url.startsWith("${SpotifyClient.API}/me/tracks?"))
-            assertNull("ids in the query, not a body a DELETE may not carry", c.body)
-        }
-        assertTrue(http.calls[0].url.contains("ids=t0%2Ct1%2C"))
-        assertEquals(50, java.net.URLDecoder.decode(
-            http.calls[0].url.substringAfter("ids="), "UTF-8").split(",").size)
-    }
-
-    @Test fun `Spotify removes saved albums twenty at a time, its maximum for this call`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "")))
-        SpotifyClient(liveSession(), http, sleeper = {})
-            .unsaveAlbums((0 until Clearance.ALBUM_BATCH).map { "a$it" })
-        assertEquals("one clear-out batch is exactly one request", 1, http.calls.size)
-        assertEquals("DELETE", http.calls[0].method)
-        assertTrue(http.calls[0].url, http.calls[0].url.contains("/me/albums?ids="))
-
-        val more = FakeHttp(listOf(FakeHttp.res(200, "")))
-        SpotifyClient(liveSession(), more, sleeper = {}).unsaveAlbums((0 until 45).map { "a$it" })
-        assertEquals("45 albums is three requests of at most 20", 3, more.calls.size)
-    }
-
-    @Test fun `Spotify unfollows artists with type=artist in the query`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, "")))
-        SpotifyClient(liveSession(), http, sleeper = {}).unfollowArtists(listOf("a1", "a2"))
-        assertEquals("DELETE", http.calls[0].method)
-        assertTrue(http.calls[0].url.contains("/me/following?"))
-        assertTrue(http.calls[0].url.contains("type=artist"))
-        assertTrue(http.calls[0].url.contains("ids=a1%2Ca2"))
-    }
-
-    @Test fun `Spotify removes a playlist by unfollowing it, owned or not`() {
-        for (owned in listOf(true, false)) {
-            val http = FakeHttp(listOf(FakeHttp.res(200, "")))
-            SpotifyClient(liveSession(), http, sleeper = {}).removePlaylist("pl/1", owned)
-            assertEquals("DELETE", http.calls[0].method)
-            assertEquals("the id is escaped, not concatenated",
-                "${SpotifyClient.API}/playlists/pl%2F1/followers", http.calls[0].url)
-        }
-    }
 
     @Test fun `Qobuz unfavourites through favorite delete with the same id lists as create`() {
         val http = FakeHttp(listOf(FakeHttp.res(200, """{"status":"success"}""")))
@@ -145,25 +69,14 @@ class ClientRequestsTest {
 
     @Test fun `empty removal lists send no requests at all`() {
         val http = FakeHttp(listOf(FakeHttp.res(200, "")))
-        val sp = SpotifyClient(liveSession(), http, sleeper = {})
-        sp.unsaveTracks(emptyList())
-        sp.unsaveAlbums(listOf(""))
-        QobuzClient(QobuzSession(token = "t", userId = "1"), http, sleeper = {})
-            .unfollowArtists(emptyList())
+        val qz = qobuz(http)
+        qz.unsaveTracks(emptyList())
+        qz.unsaveAlbums(listOf(""))
+        qz.unfollowArtists(emptyList())
         assertEquals(0, http.calls.size)
     }
 
     // ---------------------------------------------------------------- paging
-
-    @Test fun `Spotify paging stops at the reported total`() {
-        fun page(n: Int, total: Int) = FakeHttp.res(200,
-            """{"total":$total,"items":[""" +
-                (0 until n).joinToString(",") { """{"id":"p$it"}""" } + "]}")
-        val http = FakeHttp(listOf(page(50, 60), page(10, 60), page(0, 60)))
-        val all = SpotifyClient(liveSession(), http, sleeper = {}).playlists()
-        assertEquals(60, all.size)
-        assertEquals("it stopped without a third empty request", 2, http.calls.size)
-    }
 
     @Test fun `Qobuz paging stops on a short page`() {
         val http = FakeHttp(listOf(FakeHttp.res(200,
@@ -174,69 +87,19 @@ class ClientRequestsTest {
         assertEquals(1, http.calls.size)
     }
 
-    @Test fun `a Spotify playlist page skips local files and episodes, naming them`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, """
-            {"total":3,"items":[
-              {"is_local":true,"track":{"name":"bootleg.flac"}},
-              {"is_local":false,"track":{"id":"e","type":"episode","name":"Some Show"}},
-              {"is_local":false,"track":{"id":"t","type":"track","name":"Song",
-                "duration_ms":1000,"artists":[{"name":"A"}],"album":{"name":"R"},
-                "external_ids":{}}}
-            ]}"""), FakeHttp.res(200, """{"total":3,"items":[]}""")))
-        val tracks = SpotifyClient(liveSession(), http, sleeper = {}).playlistTracks("p")
-        assertEquals(3, tracks.size)
-        assertEquals("local file", tracks[0].skip)
-        assertEquals("podcast episode", tracks[1].skip)
-        assertNull(tracks[2].skip)
-    }
     // ------------------------------------------------------- barcode search
-    // Spotify's album search returns SimplifiedAlbumObject with no
-    // external_ids, so a candidate never carries a barcode and Match's barcode
-    // tier could not fire. The `upc:` filter is the fix, and because the result
-    // still has no barcode on it, THE FILTER IS THE EVIDENCE — the code is
-    // stamped on so the tier can see it.
-
-    @Test fun `a Spotify barcode search uses the upc filter and stamps the result`() {
-        val http = FakeHttp(listOf(FakeHttp.res(200, """
-            {"albums":{"items":[
-              {"id":"sal","name":"Master of Puppets","total_tracks":8,
-               "artists":[{"name":"Metallica"}]}
-            ]}}""")))   // note: NO external_ids, exactly as Spotify sends
-        val albums = SpotifyClient(liveSession(), http, sleeper = {})
-            .searchByUpc("075992736121")
-        assertTrue(http.calls[0].url.contains("q=upc%3A075992736121"))
-        assertTrue(http.calls[0].url.contains("type=album"))
-        assertEquals(1, albums.size)
-        assertEquals("the searched-for barcode must be stamped on, or the tier cannot fire",
-            "075992736121", albums[0].upc)
-    }
-
-    @Test fun `a barcode search that returns a crowd is not trusted as one`() {
-        // A barcode identifies one release. If the filter hands back a pile it
-        // is not filtering, and stamping would be a confidently wrong match.
-        val items = (0 until 6).joinToString(",") {
-            """{"id":"a$it","name":"Something Else","total_tracks":9,
-                "artists":[{"name":"Nope"}]}"""
-        }
-        val http = FakeHttp(listOf(FakeHttp.res(200, """{"albums":{"items":[$items]}}""")))
-        val albums = SpotifyClient(liveSession(), http, sleeper = {})
-            .searchByUpc("075992736121")
-        assertEquals(6, albums.size)
-        assertTrue("nothing is stamped, so these are judged on title and artist",
-            albums.all { it.upc.isEmpty() })
-    }
 
     @Test fun `an empty barcode makes no request at all`() {
         val http = FakeHttp(listOf(FakeHttp.res(200, "{}")))
-        val sp = SpotifyClient(liveSession(), http, sleeper = {})
-        assertEquals(emptyList<Album>(), sp.searchByUpc(""))
-        assertEquals(emptyList<Album>(), sp.searchByUpc("   "))
+        val qz = qobuz(http)
+        assertEquals(emptyList<Album>(), qz.searchByUpc(""))
+        assertEquals(emptyList<Album>(), qz.searchByUpc("   "))
         assertEquals(0, http.calls.size)
     }
 
     @Test fun `Qobuz searches the barcode as a plain query and needs no stamp`() {
-        // Unlike Spotify's, Qobuz's album listings DO carry upc, so Match
-        // compares the real codes itself.
+        // Qobuz's album listings carry the upc, so Match compares the real
+        // codes itself rather than trusting the search.
         val http = FakeHttp(listOf(FakeHttp.res(200, """
             {"albums":{"items":[
               {"id":7,"title":"Master Of Puppets","upc":"075992736121",
@@ -252,7 +115,7 @@ class ClientRequestsTest {
 
     // -------------------------------------------- an album's track listing
     //
-    // albumTracks was added to the interface and to both clients for the
+    // albumTracks was added to the interface and to the clients for the
     // corroboration tier -- the thing that decides a barcode-less album --
     // and NOT ONE of these tests existed. Only the fake was tested, and a
     // fake agrees with whatever you wrote. On a real library the tier then
@@ -293,35 +156,13 @@ class ClientRequestsTest {
         assertEquals(emptyList<Track>(), qz.albumTracks("x"))
     }
 
-    @Test fun `a Spotify album's tracks are paged, and carry no ISRC`() {
-        // SimplifiedTrackObject: no external_ids and no album block. Fine for
-        // comparing TITLES against the other side's listing, but a caller must
-        // not expect an ISRC from it.
-        val page1 = (0 until 50).joinToString(",") {
-            """{"id":"t$it","name":"Track $it","duration_ms":200000,
-                "artists":[{"name":"Band"}]}""" }
-        val http = FakeHttp(listOf(
-            FakeHttp.res(200, """{"items":[$page1],"total":52}"""),
-            FakeHttp.res(200, """{"items":[
-                {"id":"t50","name":"Track 50","duration_ms":1000,"artists":[{"name":"Band"}]},
-                {"id":"t51","name":"Track 51","duration_ms":1000,"artists":[{"name":"Band"}]}],
-                "total":52}""")))
-        val sp = SpotifyClient(liveSession(), http, sleeper = {})
-        val tracks = sp.albumTracks("sal")
-
-        assertTrue(http.calls[0].url.contains("albums/sal/tracks"))
-        assertEquals("a box set is more than one page", 52, tracks.size)
-        assertEquals("Track 0", tracks[0].title)
-        assertEquals("a simplified track has none", "", tracks[0].isrc)
-    }
-
     @Test fun `an album id is escaped rather than concatenated`() {
         // Ids arrive from a search response rather than from us, and a path
         // built by concatenation is one odd id away from requesting something
         // else entirely.
-        val http = FakeHttp(listOf(FakeHttp.res(200, """{"items":[],"total":0}""")))
-        val sp = SpotifyClient(liveSession(), http, sleeper = {})
-        sp.albumTracks("a/b?c")
-        assertTrue(http.calls[0].url, http.calls[0].url.contains("albums/a%2Fb%3Fc/tracks"))
+        val http = FakeHttp(listOf(FakeHttp.res(200, """{"id":"x","title":"T"}""")))
+        qobuz(http).albumTracks("a/b?c&x=1")
+        assertTrue(http.calls[0].url, http.calls[0].url.contains("album_id=a%2Fb%3Fc%26x%3D1"))
+        assertFalse(http.calls[0].url, http.calls[0].url.contains("&x=1"))
     }
 }

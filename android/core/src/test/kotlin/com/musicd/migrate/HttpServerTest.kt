@@ -84,25 +84,38 @@ class HttpServerTest {
         val j = JSONObject(body)
         assertEquals(false, j.getJSONObject("qobuz").getBoolean("signedIn"))
         assertEquals("0.1.0", j.getString("version"))
-        // The redirect URI is derived from the Host header of this very
-        // request, which on a phone is always the loopback address — the one
-        // Spotify accepts over plain http.
-        assertTrue(j.getJSONObject("spotify").getString("redirectUri")
-            .startsWith("http://127.0.0.1:"))
-        assertEquals(true,
-            j.getJSONObject("spotify").getJSONObject("redirectCheck").getBoolean("ok"))
+        assertTrue("no library file yet", j.isNull("import"))
     }
 
     @Test fun `a POST body actually arrives — which is why this is a real socket`() {
         // The whole reason the APK serves the page over HTTP rather than
         // intercepting it in the WebView: shouldInterceptRequest is never
-        // handed the BODY of a POST, and this app POSTs to sign in, to start a
-        // migration and to cancel one.
-        val (status, body, _) = fetch("/api/spotify/client-id", "POST",
-            """{"clientId":"${"a".repeat(32)}"}""")
-        assertEquals(200, status)
-        assertEquals(true, JSONObject(body).getBoolean("ok"))
-        assertEquals("a".repeat(32), store.setting("spotify.clientId"))
+        // handed the BODY of a POST, and this app POSTs a whole library file.
+        val (status, body, _) = fetch("/api/import/file?name=mine.csv", "POST",
+            "album artist,album,title\nMetallica,Master Of Puppets,Battery\n")
+        assertEquals(body, 200, status)
+        val j = JSONObject(body)
+        assertEquals("mine.csv", j.getString("fileName"))
+        assertEquals(1, j.getInt("albums"))
+    }
+
+    @Test fun `a library file of tens of megabytes is accepted over the socket`() {
+        // A one-row-per-track export of a ten-thousand-album library is about
+        // 20MB. The server used to refuse any body over 4MB with a 413, which
+        // the page would have shown as "Payload Too Large" for exactly the
+        // libraries this exists for.
+        val sb = StringBuilder("album artist,album,track,title,barcode\n")
+        var album = 0
+        while (sb.length < 12 * 1024 * 1024) {
+            album++
+            for (t in 1..12) {
+                sb.append("Artist $album,Album $album,$t,A fairly ordinary track title $t,\n")
+            }
+        }
+        val (status, body, _) = fetch("/api/import/file?name=big.csv", "POST", sb.toString())
+        assertEquals(body.take(200), 200, status)
+        assertEquals(album, JSONObject(body).getInt("albums"))
+        assertEquals(album * 12, JSONObject(body).getInt("tracks"))
     }
 
     @Test fun `an unknown path is a 404 rather than a hang`() {
