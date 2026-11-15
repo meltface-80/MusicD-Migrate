@@ -5,9 +5,8 @@ import java.security.SecureRandom
 import java.util.Base64
 
 /*
- * Pkce.kt — signing in to Spotify without a client secret. The Kotlin twin of
- * lib/spotify-pkce.js, tested by the same cases including RFC 7636's own
- * published test vector.
+ * Pkce.kt — signing in to Spotify without a client secret. Tested against
+ * RFC 7636's own published test vector.
  *
  * WHY PKCE. The ordinary authorization-code flow needs a client secret, and
  * there is nowhere to put one in an APK: anything shipped inside it is
@@ -75,7 +74,7 @@ object Pkce {
      * cannot be obtained just makes the app unusable. So it is baked in, at
      * the owner's explicit request, with all of this stated in the open:
      *
-     * - **It is not registered to MusicD Migrate.** It is one of the
+     * - **It is not registered to Mandarin Migration.** It is one of the
      *   well-known ids the open-source Spotify world shares, and it works
      *   here for exactly one reason: `/login` is whitelisted on it (see
      *   [CALLBACK_PATH]).
@@ -87,9 +86,8 @@ object Pkce {
      * - **It is not secret.** PKCE means there is no client secret, and a
      *   client id travels in the authorise URL in plain sight.
      *
-     * Kept in step with DEFAULT_CLIENT_ID in lib/spotify-pkce.js by hand;
-     * ContractTest fails if the two ever disagree, because a mismatch would
-     * mean the phone and the container sign in as two different applications.
+     * ContractTest fails if this and the README appendix ever disagree: the
+     * appendix is where the owner looks when a sign-in stops working.
      */
     const val DEFAULT_CLIENT_ID = "d420a117a32841c2b3474932e49fb54b"
 
@@ -228,7 +226,7 @@ object Pkce {
 /*
  * Qobuz's sign-in, which needs no dashboard visit at all.
  *
- * Ported from lib/qobuz-oauth.js, which is itself ported from
+ * Ported (via this repository's former Node server) from
  * meltface-80/MusicD-Remote. Unlike Spotify, Qobuz accepts ANY redirect_url
  * without pre-registration — which is why this side asks the user for nothing.
  *

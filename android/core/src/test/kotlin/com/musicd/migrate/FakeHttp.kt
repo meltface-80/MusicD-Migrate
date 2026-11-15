@@ -3,8 +3,7 @@ package com.musicd.migrate
 /**
  * An Http that answers from a scripted list and records what it was asked.
  *
- * The Kotlin counterpart of the fake `fetch` in test/unit/clients.test.js. It
- * is what lets the real conversion, paging, batching and rate-limit code be
+ * It is what lets the real conversion, paging, batching and rate-limit code be
  * driven on a plain JVM with no account, no phone and no internet.
  */
 class FakeHttp(private val script: List<HttpResponse>) : Http {

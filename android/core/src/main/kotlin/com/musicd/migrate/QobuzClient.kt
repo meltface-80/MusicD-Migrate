@@ -4,8 +4,8 @@ import org.json.JSONObject
 import java.security.MessageDigest
 
 /*
- * QobuzClient.kt — the Qobuz API, as much of it as migrating needs. The Kotlin
- * twin of lib/qobuz.js.
+ * QobuzClient.kt — the Qobuz API, as much of it as migrating and clearing a
+ * library need.
  *
  * IMPORTANT: this is the UNOFFICIAL Qobuz API — the same one the Lyrion/LMS
  * "Qobuz" community plugin and every open-source Qobuz client use. It is not a
@@ -372,6 +372,43 @@ class QobuzClient(
             request("favorite/create",
                 mapOf("type" to "artists", "artist_ids" to batch.joinToString(",")), "POST")
         }
+    }
+
+    // --------------------------------------------------------------- removals
+    //
+    // The mirror image of the saves, for a clear-out. `favorite/delete` takes
+    // exactly the id lists `favorite/create` does, and is what the owner's
+    // Mandarin server — a Qobuz client that works — calls to unfavourite an
+    // album (with `album_ids` alone, which is why no `type` is sent here).
+    // Batched at 50 for the same 414 reason as the saves.
+
+    override fun unsaveTracks(trackIds: List<String>) {
+        for (batch in chunk(trackIds, 50)) {
+            request("favorite/delete", mapOf("track_ids" to batch.joinToString(",")), "POST")
+        }
+    }
+
+    override fun unsaveAlbums(albumIds: List<String>) {
+        for (batch in chunk(albumIds, 50)) {
+            request("favorite/delete", mapOf("album_ids" to batch.joinToString(",")), "POST")
+        }
+    }
+
+    override fun unfollowArtists(artistIds: List<String>) {
+        for (batch in chunk(artistIds, 50)) {
+            request("favorite/delete", mapOf("artist_ids" to batch.joinToString(",")), "POST")
+        }
+    }
+
+    /**
+     * Qobuz, unlike Spotify, has two different calls: `playlist/delete` for a
+     * playlist the user made and `playlist/unsubscribe` for one they follow.
+     * Deleting somebody else's playlist is refused, and unsubscribing from
+     * your own does not delete it — so the caller has to know which it is.
+     */
+    override fun removePlaylist(playlistId: String, owned: Boolean) {
+        request(if (owned) "playlist/delete" else "playlist/unsubscribe",
+            mapOf("playlist_id" to playlistId), "POST")
     }
 }
 

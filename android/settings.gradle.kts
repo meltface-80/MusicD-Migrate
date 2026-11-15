@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MusicDMigrate"
+rootProject.name = "MandarinMigration"
 include(":core")
 include(":app")

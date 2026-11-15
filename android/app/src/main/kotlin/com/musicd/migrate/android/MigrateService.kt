@@ -89,8 +89,6 @@ class MigrateService : Service() {
         store = s
         val a = MigrateApi(s, AndroidAssets(applicationContext),
             version = BuildConfig.VERSION_NAME,
-            roonDiscovery = com.musicd.migrate.roon.SoodDiscovery(
-                multicastLock = WifiMulticastLock(applicationContext)),
             // :core cannot touch a Service, so it reports when there is a run
             // to protect and this decides what that means.
             onBusyChanged = { busy -> onBusy(busy) })
@@ -217,36 +215,5 @@ class MigrateService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .build()
-    }
-}
-
-/**
- * A WifiManager multicast lock, held while Roon discovery listens.
- *
- * Android filters multicast out of userspace unless an app holds one of these,
- * so without it the SOOD replies never arrive and discovery reports no Roon
- * Core on a network that has one — which sends the user to look at their Wi-Fi
- * for a problem that is in this app. Android-Random-Remote needed exactly the
- * same thing.
- *
- * Reference-counted because a second discovery round must not release the
- * lock the first one is still using.
- */
-private class WifiMulticastLock(context: Context) : com.musicd.migrate.roon.MulticastLock {
-    private val lock = (context.applicationContext
-        .getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager)
-        ?.createMulticastLock("musicd-migrate-roon")
-        ?.also { it.setReferenceCounted(true) }
-
-    override fun acquire() {
-        // Guarded because a device with Wi-Fi off, or an emulator image
-        // without the service, has no WifiManager — and Roon discovery over
-        // Ethernet still works without the lock. The app must not fail to
-        // start over it.
-        runCatching { lock?.acquire() }
-    }
-
-    override fun release() {
-        runCatching { if (lock?.isHeld == true) lock.release() }
     }
 }

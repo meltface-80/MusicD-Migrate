@@ -1,9 +1,8 @@
 name: CI
 
-# Both halves of the repository are checked on every push, and they are checked
-# TOGETHER: the contract tests in :core read index.js and public/app.js from the
-# working tree, so a route added on one side and not the other fails here rather
-# than on somebody's phone.
+# Everything is checked on every push. The contract tests in :core read
+# public/*.js from the working tree, so a route the page calls and the APK does
+# not serve fails here rather than on somebody's phone.
 on:
   push:
     branches: ["**"]
@@ -15,8 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  node:
-    name: Server and page
+  page:
+    name: Page and repository checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,14 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - run: npm install --no-audit --no-fund
-
-      # node --check on every source file, then the unit and API suites. None
-      # of it needs a Qobuz or Spotify account: the clients are driven by a
-      # fake fetch and the engine by fake services with the same interface.
-      - name: Run the test suite
-        run: npm test
 
       # The front-end is JavaScript with no build step, so nothing else would
       # notice a call to something that no longer exists. `node --check` cannot
@@ -44,12 +35,10 @@ jobs:
       # that entirely.
       - name: Lint the page for undefined references
         run: |
+          for f in public/*.js; do node --check "$f"; done
           npm install --no-save --silent eslint@9
-          npx eslint --config tools/eslint.config.mjs public/app.js
+          npx eslint --config tools/eslint.config.mjs public/*.js
 
-      # The icons are generated, not checked in as art — so the committed PNGs
-      # must be what the generator produces. A hand-edited icon would be undone
-      # by the next run of the tool without this.
       # v0.1.0 shipped unable to load its own page: Android denies cleartext
       # HTTP by default at targetSdk 28+, the UI is served over http from
       # 127.0.0.1, and every launch showed ERR_CLEARTEXT_NOT_PERMITTED. The
@@ -57,6 +46,14 @@ jobs:
       - name: Check the Android network security config
         run: python3 tools/check-android-cleartext.py
 
+      # The owner's rule: no source file over 500 lines. See "File size" in
+      # CLAUDE.md for how to split one that is getting there.
+      - name: Check no source file is over 500 lines
+        run: python3 tools/check-file-length.py
+
+      # The icons are generated, not checked in as art — so the committed PNGs
+      # must be what the generator produces. A hand-edited icon would be undone
+      # by the next run of the tool without this.
       - name: Check the icons match their generator
         run: |
           node tools/make-icons.js
@@ -77,8 +74,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # The matching, both API clients, the migration engine and the whole
-      # route table live in :core, which is a plain Kotlin/JVM module — so the
+      # The matching, both API clients, the migration and clear-out engines
+      # and the whole route table live in :core, which is a plain Kotlin/JVM module — so the
       # part of the app most worth testing is tested without an emulator or an
       # Android SDK. ContractTest is in here too, and it is why this job checks
       # out the whole repository rather than just android/.
@@ -96,7 +93,7 @@ jobs:
   apk:
     name: APK
     runs-on: ubuntu-latest
-    needs: [node, core]
+    needs: [page, core]
     # A build that hangs must fail with logs rather than sit until the six-hour
     # default expires: the logs are only retrievable once the job ends.
     timeout-minutes: 40
@@ -173,13 +170,13 @@ jobs:
       # The APK is evidence and can be inspected without a device. The page
       # inside it must be the repository's public/ byte for byte — if the
       # staging task ever silently stops running, the APK would ship an old UI
-      # and nothing else would notice.
+      # and nothing else would notice. Every file the page loads is listed.
       - name: Check the bundled page is this repository's public/
         run: |
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           mkdir -p /tmp/apkweb
-          for f in index.html app.js style.css manifest.json; do
+          for f in index.html app.js run.js clear.js style.css manifest.json; do
             unzip -p "$apk" "assets/web/$f" > "/tmp/apkweb/$f"
             cmp "/tmp/apkweb/$f" "public/$f" \
               || (echo "::error::assets/web/$f in the APK differs from public/$f" && exit 1)
@@ -241,9 +238,9 @@ jobs:
           # artifact should not get a file that looks like a release and cannot
           # install.
           if [ "$HAVE_KEY" = "true" ]; then
-            out="musicd-migrate-${version}.apk"
+            out="mandarin-migration-${version}.apk"
           else
-            out="musicd-migrate-${version}-UNSIGNED.apk"
+            out="mandarin-migration-${version}-UNSIGNED.apk"
           fi
           cp "$apk" "$out"
           echo "apk=$out" >> "$GITHUB_OUTPUT"
@@ -277,9 +274,10 @@ jobs:
             echo "dist/$APK is already committed — nothing to publish."
             exit 0
           fi
-          # One APK in the tree at a time. `git rm` of the last file in a
-          # directory removes the directory too, so the mkdir comes AFTER it.
-          git rm -q --ignore-unmatch 'dist/musicd-migrate-*.apk'
+          # One APK in the tree at a time — under the old name or the new one.
+          # `git rm` of the last file in a directory removes the directory
+          # too, so the mkdir comes AFTER it.
+          git rm -q --ignore-unmatch 'dist/musicd-migrate-*.apk' 'dist/mandarin-migration-*.apk'
           mkdir -p dist
           cp "$APK" "dist/$APK"
           sha=$(sha256sum "$APK" | cut -d' ' -f1)
@@ -297,7 +295,7 @@ jobs:
           # version that no longer exists. Every mention, not just the path:
           # the link TEXT names the version too, and a label that disagrees
           # with what it downloads is worse than no label.
-          sed -i -E "s#musicd-migrate-[0-9][0-9A-Za-z._-]*\.apk#$APK#g" README.md
+          sed -i -E "s#(musicd-migrate|mandarin-migration)-[0-9][0-9A-Za-z._-]*\.apk#$APK#g" README.md
           git add "dist/$APK" dist/latest.json README.md
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

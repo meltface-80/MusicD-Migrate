@@ -5,12 +5,10 @@ import java.text.Normalizer
 /*
  * Canon.kt — turning two services' idea of a name into one comparable string.
  *
- * THE KOTLIN TWIN OF lib/canon.js, and it is deliberately a twin: the same
- * rules, the same edition-word list, the same refusals, and the tests in
- * CanonTest.kt are the JavaScript tests translated line for line. When one
- * side gains a rule the other has to, or the APK and the container will
- * quietly disagree about which tracks migrate — and the APK is the half nobody
- * would think to check.
+ * The edition-word list here is the single most behaviour-defining constant
+ * in the app: it decides which suffixes are an edition (safe to match
+ * through) and which name a different recording (never matched through).
+ * CanonTest.kt pins both sides of that line.
  *
  * Everything here is pure: no network, no Android, no account.
  */
@@ -166,8 +164,6 @@ object Canon {
      *
      * Measured on a real 9,635-album library: 88 albums were refused because
      * a band's own name had been cut in half this way.
-     *
-     * Kept in step with splitArtists in lib/canon.js by hand.
      */
     fun splitArtists(value: String?): List<String> {
         val out = ArrayList<String>()
@@ -193,8 +189,6 @@ object Canon {
      * Roon library: 457 of the 1,273 albums whose search came back EMPTY had
      * an artist string naming more than one person, against 2.0% of the 4,639
      * that matched.
-     *
-     * Kept in step with artistNames in lib/canon.js by hand.
      */
     fun artistNames(value: String?): List<String> {
         val out = ArrayList<String>()
@@ -214,8 +208,6 @@ object Canon {
      * does this constantly. Deliberately short, and deliberately without
      * "tribute", "covers", "band" or "project": a tribute act IS somebody
      * else, and that is the mistake this whole file exists to avoid.
-     *
-     * Kept in step with ENSEMBLE_WORDS in lib/canon.js by hand.
      */
     val ENSEMBLE_WORDS = listOf("trio", "quartet", "quintet", "sextet", "septet",
         "octet", "orchestra", "ensemble", "quartett", "big band")

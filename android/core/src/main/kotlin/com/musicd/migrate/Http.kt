@@ -12,8 +12,7 @@ import java.net.URLEncoder
  * module runs on a plain JVM with no phone, no account and no internet, and it
  * gets there by handing the clients a fake. SpotifyClientTest and
  * QobuzClientTest drive the real conversion, paging and batching code against
- * scripted responses, which is the same thing test/unit/clients.test.js does
- * with a fake fetch on the JavaScript side.
+ * scripted responses (see FakeHttp in the tests).
  *
  * HttpURLConnection rather than a library: :core has no dependencies at all
  * (org.json is compileOnly because Android supplies it), and one fewer thing

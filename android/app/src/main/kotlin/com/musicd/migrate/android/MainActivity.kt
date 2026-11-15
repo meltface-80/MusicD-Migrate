@@ -88,12 +88,12 @@ class MainActivity : Activity() {
              * A WebView does NOTHING with a download unless the app says what
              * to do with it.
              *
-             * Both CSV links on the page — the migration report and the Roon
-             * library — are ordinary <a download> links to this app's own
+             * The CSV link on the page — the report of a migration or a
+             * clear-out — is an ordinary <a download> link to this app's own
              * server, and the server answers with Content-Disposition:
              * attachment. In a browser that saves a file. In a WebView with no
              * DownloadListener, tapping it silently does nothing at all, which
-             * is how both buttons were dead from v0.1.0 until somebody tried
+             * is how the download buttons were dead from v0.1.0 until somebody tried
              * them. The report is the actual output of a migration, so this is
              * not a cosmetic gap: it is the one feature the whole run exists
              * to produce.
@@ -132,7 +132,7 @@ class MainActivity : Activity() {
             try {
                 val sw = java.io.StringWriter()
                 error.printStackTrace(java.io.PrintWriter(sw))
-                val text = "MusicD Migrate " + versionName() + "\n" +
+                val text = "Mandarin Migration " + versionName() + "\n" +
                     "crashed on thread \"" + thread.name + "\"\n" +
                     "when: " + java.util.Date() + "\n" +
                     "device: " + Build.MANUFACTURER + " " + Build.MODEL +
@@ -218,7 +218,7 @@ class MainActivity : Activity() {
         }
 
         val text = buildString {
-            append("MusicD Migrate ").append(versionName()).append('\n')
+            append("Mandarin Migration ").append(versionName()).append('\n')
             append("The app ").append(name).append('\n')
             append("when: ").append(java.util.Date(last.timestamp)).append('\n')
             append("reason: ").append(last.reason)
@@ -268,7 +268,7 @@ class MainActivity : Activity() {
     private fun saveCrashReport(what: String, text: String) {
         Thread({
             val where = try {
-                store("musicd-crash.txt", text.toByteArray(Charsets.UTF_8), "text/plain")
+                store("mandarin-migration-crash.txt", text.toByteArray(Charsets.UTF_8), "text/plain")
             } catch (e: Exception) {
                 null
             }
@@ -356,7 +356,7 @@ class MainActivity : Activity() {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 // The type has to match the name or MediaStore RENAMES the
                 // file to suit it: saving crash-report.txt as "text/csv"
-                // lands it as "musicd-crash.txt.csv", which is what it did
+                // lands it as "mandarin-migration-crash.txt.csv", which is what it did
                 // the first time this was run on an emulator.
                 put(MediaStore.Downloads.MIME_TYPE, mime)
             }
@@ -399,7 +399,7 @@ class MainActivity : Activity() {
         if (attempt > 40) {   // ~4 seconds
             web.loadData(
                 "<p style='font:16px system-ui;padding:24px'>" +
-                    "MusicD Migrate could not start its local server. " +
+                    "Mandarin Migration could not start its local server. " +
                     "Close the app and open it again.</p>",
                 "text/html", "utf-8")
             return

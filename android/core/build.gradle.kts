@@ -33,16 +33,15 @@ tasks.test {
     // have.
     maxHeapSize = "512m"
 
-    // ContractTest reads files OUTSIDE this module — public/app.js, index.js,
-    // lib/canon.js, lib/service.js — and compares them with the Kotlin side.
-    // Gradle cannot know that, so it would report the task up to date after a
-    // change to any of them and the whole class of drift these tests exist to
-    // catch would go unchecked in exactly the case that matters: the JS half
-    // edited on its own. Declaring them as inputs makes the task rerun.
+    // ContractTest reads files OUTSIDE this module — the page's scripts in
+    // public/ and the README — and compares them with the Kotlin side. Gradle cannot know
+    // that, so it would report the task up to date after a change to the page
+    // alone, and the whole class of drift these tests exist to catch would go
+    // unchecked in exactly the case that matters. Declaring them as inputs
+    // makes the task rerun.
     val repoRoot = rootProject.projectDir.parentFile
-    for (name in listOf("public/app.js", "index.js", "lib/canon.js", "lib/service.js",
-                        "lib/spotify-pkce.js", "README.md")) {
-        val f = File(repoRoot, name)
-        if (f.isFile) inputs.file(f).withPropertyName(name.replace('/', '_'))
-    }
+    val page = File(repoRoot, "public")
+    if (page.isDirectory) inputs.dir(page).withPropertyName("public")
+    val readme = File(repoRoot, "README.md")
+    if (readme.isFile) inputs.file(readme).withPropertyName("README.md")
 }

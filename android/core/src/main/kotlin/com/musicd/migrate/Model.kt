@@ -50,38 +50,17 @@ data class Account(val id: String, val name: String)
 /**
  * A library that can be READ.
  *
- * Spotify and Qobuz are both of these; so is Roon, and Roon is the reason the
- * interface is split in two. A Roon library is somebody's own files on their
- * own disk, reached through the browse API. It can be listed and it cannot be
- * added to — there is no "save this album to Roon", because the album would
- * have to exist as a file first. So a Roon client implements this and stops.
+ * Split from [MusicTarget] so that the migration's SOURCE is asked for
+ * nothing but reads — a dry run, and every phase before the writes, can then
+ * be seen at a glance to touch nothing.
  *
  * `albumDetail` lives here rather than with the searches because it is asked
  * of the SOURCE: it is how a source album's barcode is fetched BEFORE
- * anything is searched for. A source with no barcodes to give still has to
- * answer; it answers null.
- *
- * Kept in step with SOURCE_METHODS in lib/service.js — ContractTest fails if
- * the two drift, the same way it does for the edition words.
+ * anything is searched for.
  */
 interface MusicSource {
     val serviceName: String
     val accountId: String
-
-    /**
-     * Kinds this source will not offer, keyed "tracks" / "playlists", with the
-     * reason as the value.
-     *
-     * Roon is why. Its browse API gives a track's title and artist and NOT its
-     * length, and title plus artist is exactly what a cover, a re-recording
-     * and a live take also satisfy — so a track from Roon can never be matched
-     * safely, and neither can a Roon playlist.
-     *
-     * The wrong way to handle that is an empty list: the run then reports "0
-     * tracks matched" and finishes green, which reads as a library with
-     * nothing in it. Migration records the reason as a skipped row instead.
-     */
-    val unsupported: Map<String, String> get() = emptyMap()
 
     fun me(): Account
 
@@ -97,8 +76,7 @@ interface MusicSource {
      *
      * In the READ half because it is asked of BOTH sides: of the source to
      * learn what the user owns, and of a candidate on the target to
-     * corroborate a match made without a barcode. For a Roon album that
-     * listing is the only independent evidence there is -- see
+     * corroborate a match made without a barcode -- see
      * Match.tracklistCorroborates.
      */
     fun albumTracks(albumId: String): List<Track>
@@ -111,7 +89,9 @@ interface MusicSource {
  * target's existing library once up front so that everything already there is
  * skipped rather than searched for, which is most of why a second run is fast.
  *
- * Kept in step with TARGET_METHODS in lib/service.js.
+ * It is also what a CLEAR-OUT acts on: the removals at the bottom are the
+ * mirror image of the saves, batched the same way, and only Clearance calls
+ * them.
  */
 interface MusicTarget : MusicSource {
 
@@ -136,6 +116,28 @@ interface MusicTarget : MusicSource {
     fun saveTracks(trackIds: List<String>)
     fun saveAlbums(albumIds: List<String>)
     fun followArtists(artistIds: List<String>)
+
+    // ------------------------------------------------------------ removals
+    //
+    // Only ever called by Clearance, after the user has previewed the list and
+    // typed the service's name. Batched to the endpoint maximum by the client,
+    // exactly like the saves. A batch that fails throws; the caller records
+    // every id in it as failed.
+
+    fun unsaveTracks(trackIds: List<String>)
+    fun unsaveAlbums(albumIds: List<String>)
+    fun unfollowArtists(artistIds: List<String>)
+
+    /**
+     * Take one playlist out of the library.
+     *
+     * @param owned whether the signed-in user made it. An owned playlist is
+     *   DELETED; one they merely follow is UNFOLLOWED, and the playlist itself
+     *   carries on existing for its owner. On Spotify both are the same call
+     *   (deleting your own playlist is unfollowing it); on Qobuz they are two
+     *   different endpoints, and the wrong one fails.
+     */
+    fun removePlaylist(playlistId: String, owned: Boolean)
 }
 
 /** A sign-in that is gone or was refused. Never treated as "no results". */

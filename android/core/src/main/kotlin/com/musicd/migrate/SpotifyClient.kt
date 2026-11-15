@@ -3,26 +3,16 @@ package com.musicd.migrate
 import org.json.JSONObject
 
 /*
- * SpotifyClient.kt — the Spotify Web API, as much of it as migrating needs.
- * The Kotlin twin of lib/spotify.js.
+ * SpotifyClient.kt — the Spotify Web API, as much of it as migrating and
+ * clearing a library need.
  *
- * THE RATE LIMIT IS THE DESIGN CONSTRAINT, exactly as it is on the JavaScript
- * side. Spotify answers 429 with a Retry-After, and a migration is thousands
+ * THE RATE LIMIT IS THE DESIGN CONSTRAINT. Spotify answers 429 with a Retry-After, and a migration is thousands
  * of requests. So every 429 is obeyed with the delay Spotify asked for rather
  * than a guess; every write is batched to the endpoint's maximum (100 playlist
  * tracks, 50 saved tracks, 50 albums, 50 artists); every read pages at the
  * maximum. A caller that hand-rolled any of it would work on a test account
  * and fall over on a real library.
  */
-
-data class SpotifySession(
-    val clientId: String = "",
-    var accessToken: String = "",
-    var refreshToken: String = "",
-    var expiresAt: Long = 0,
-    var userId: String = "",
-    var name: String = ""
-)
 
 class SpotifyClient(
     val session: SpotifySession,
@@ -46,36 +36,10 @@ class SpotifyClient(
          *  rather than hold a migration open for an hour pretending to work. */
         const val MAX_RETRY_WAIT_MS = 60_000L
 
-        /*
-         * PACING, so a run stops earning 429s in the first place.
-         *
-         * Measured on a real 9,635-album Roon library into Spotify: four
-         * workers burst past Spotify's rolling window within the first few
-         * requests, earn a 429 with a twenty second Retry-After, wait it out,
-         * burst again. The progress counter sat at zero and the page said
-         * "rate limiting this app — waiting 20s (3 so far)". Obeying the delay
-         * is necessary but not sufficient: something has to stop us asking too
-         * fast.
-         *
-         * So after the FIRST 429 the client spaces its requests, and adapts:
-         * double the gap on each further 429, decay back towards none after a
-         * long run of successes. A healthy run is never slowed — the gap
-         * starts at zero and nothing paces until the service complains — so
-         * Qobuz, small libraries and the tests are all untouched.
-         *
-         * The arithmetic is why this is worth it. That library is one search
-         * plus up to two track-listing reads per album, so about 29,000
-         * requests. Paced just under the limit that is a couple of hours and
-         * it finishes; bursting into a 20s wait every few requests, it never
-         * does.
-         *
-         * Kept in step with lib/spotify.js by hand.
-         */
-        const val PACE_START_MS = 250L
-        const val PACE_MAX_MS = 2_000L
-
-        /** Consecutive successes before the gap is eased back. */
-        const val PACE_DECAY_AFTER = 50
+        /** Pacing: see [SpotifyPacer]. */
+        const val PACE_START_MS = SpotifyPacer.PACE_START_MS
+        const val PACE_MAX_MS = SpotifyPacer.PACE_MAX_MS
+        const val PACE_DECAY_AFTER = SpotifyPacer.PACE_DECAY_AFTER
 
         /**
          * How many results a `upc:` search may return and still be trusted as
@@ -84,89 +48,27 @@ class SpotifyClient(
          */
         const val UPC_TRUST_LIMIT = 3
 
-        /**
-         * Trade the one-time code for tokens. No client secret — see Pkce.
-         */
+        /** Trade the one-time code for tokens. See [SpotifyTokens.exchangeCode]. */
         fun exchangeCode(
             http: Http, clientId: String, code: String, redirectUri: String, verifier: String
-        ): SpotifySession = tokenRequest(http, mapOf(
-            "grant_type" to "authorization_code",
-            "code" to code,
-            "redirect_uri" to redirectUri,
-            "client_id" to clientId,
-            "code_verifier" to verifier
-        ), clientId)
+        ): SpotifySession = SpotifyTokens.exchangeCode(http, clientId, code, redirectUri, verifier)
 
-        /**
-         * A fresh access token from the refresh token.
-         *
-         * Spotify ROTATES refresh tokens: the response may carry a new one,
-         * and when it does the old one stops working. Carrying the old one
-         * forward when none came back — rather than leaving the caller to
-         * notice — is what stops a long-lived install losing its sign-in.
-         */
-        fun refresh(http: Http, clientId: String, refreshToken: String): SpotifySession {
-            val out = tokenRequest(http, mapOf(
-                "grant_type" to "refresh_token",
-                "refresh_token" to refreshToken,
-                "client_id" to clientId
-            ), clientId)
-            if (out.refreshToken.isEmpty()) out.refreshToken = refreshToken
-            return out
-        }
-
-        private fun tokenRequest(
-            http: Http, form: Map<String, Any?>, clientId: String
-        ): SpotifySession {
-            val res = try {
-                http.request("POST", Pkce.TOKEN_URL,
-                    body = query(form).toByteArray(Charsets.UTF_8),
-                    contentType = "application/x-www-form-urlencoded", timeoutMs = 20000)
-            } catch (e: Exception) {
-                throw RuntimeException("Could not reach Spotify to sign in: ${e.message}")
-            }
-            val data = parseObject(res.body)
-            if (!res.ok) {
-                // Spotify's token errors are genuinely informative and the
-                // user can act on most of them — a wrong client id, an
-                // unregistered redirect URI, a code already spent. Passing the
-                // description through beats "HTTP 400".
-                val desc = data?.strOrNull("error_description")
-                    ?: data?.strOrNull("error")
-                    ?: res.body.take(200)
-                throw RuntimeException("Spotify refused the sign-in: $desc")
-            }
-            val token = data?.strOrNull("access_token")
-                ?: throw RuntimeException("Spotify returned no access token")
-            return SpotifySession(
-                clientId = clientId,
-                accessToken = token,
-                refreshToken = data.str("refresh_token"),
-                // 60s of slack: a token that expires mid-flight comes back as
-                // a 401 that looks exactly like a revoked sign-in.
-                expiresAt = System.currentTimeMillis() +
-                    ((data.longOrNull("expires_in") ?: 3600L) - 60L) * 1000L
-            )
-        }
+        /** A fresh access token. See [SpotifyTokens.refresh]. */
+        fun refresh(http: Http, clientId: String, refreshToken: String): SpotifySession =
+            SpotifyTokens.refresh(http, clientId, refreshToken)
     }
 
     /** Held across a refresh so four workers cannot race for a single-use token. */
     private val tokenLock = Any()
 
-    /** When every worker may fire again. See the 429 branch in [request]. */
-    @Volatile private var holdUntil = 0L
-
-    /** The gap enforced between requests, 0 until the service complains. */
-    @Volatile private var paceMs = 0L
+    /** The 429 hold and the request spacing, shared by every worker. */
+    private val pacer = SpotifyPacer(sleeper)
 
     /** For the tests: the pacing in force, and a way to preset it. Named so
      *  it is obvious at the call site that nothing in production reads them. */
-    internal fun paceMsForTest(): Long = paceMs
-    internal fun nextSlotForTest(): Long = synchronized(paceLock) { nextSlot }
-    internal fun setPaceForTest(ms: Long) { synchronized(paceLock) { paceMs = ms } }
-    private val paceLock = Any()
-    private var nextSlot = 0L
-    private var sinceThrottle = 0
+    internal fun paceMsForTest(): Long = pacer.paceMs
+    internal fun nextSlotForTest(): Long = pacer.nextSlotForTest()
+    internal fun setPaceForTest(ms: Long) = pacer.setPaceForTest(ms)
 
     /**
      * A valid access token, refreshing at most ONCE however many callers ask.
@@ -186,8 +88,6 @@ class SpotifyClient(
      * A Qobuz `user_auth_token` neither expires nor rotates, so this cannot
      * happen on that side — it is exactly the difference between a run into
      * Qobuz and a run into Spotify.
-     *
-     * Kept in step with accessToken in lib/spotify.js by hand.
      */
     private fun accessToken(): String {
         if (session.accessToken.isNotEmpty() && session.expiresAt > System.currentTimeMillis()) {
@@ -223,28 +123,9 @@ class SpotifyClient(
         var refreshed = false
 
         while (true) {
-            // ONE WORKER'S 429 HOLDS ALL OF THEM. Lookups run four at a time,
-            // and four workers each backing off privately all resume at the
-            // same instant and earn the next 429 together — which is how a
-            // single rate-limit turns into a run that never gets going again.
-            // Spotify counts requests per APPLICATION, so the hold is per
-            // client.
-            val hold = holdUntil - System.currentTimeMillis()
-            if (hold > 0) sleeper(hold)
-
-            // Then take a paced slot. Claimed UNDER THE LOCK, before the
-            // sleep, so four workers get four different slots rather than all
-            // reading the same one. A gap of 0 — a run that has never been
-            // throttled — makes this a no-op.
-            if (paceMs > 0) {
-                val wait = synchronized(paceLock) {
-                    val now = System.currentTimeMillis()
-                    val slot = maxOf(now, nextSlot)
-                    nextSlot = slot + paceMs
-                    slot - now
-                }
-                if (wait > 0) sleeper(wait)
-            }
+            // One worker's 429 holds all of them, and a throttled run is
+            // spaced out. See SpotifyPacer.
+            pacer.waitTurn()
 
             val token = accessToken()
             val qs = query(params)
@@ -280,18 +161,9 @@ class SpotifyClient(
                 if (attempt++ >= MAX_RETRIES) {
                     throw RateLimitError("Spotify is rate limiting this app and did not let up.")
                 }
-                // Set the hold and let the top of the loop do the sleeping.
-                // Sleeping here as well would wait TWICE: once privately and
-                // once on the hold this just set.
-                // Ask more slowly from now on, so this stops happening.
-                // Doubling rather than a fixed step: the gap that works is
-                // unknown and the Client ID is shared, so converge on it
-                // instead of guessing.
-                synchronized(paceLock) {
-                    paceMs = minOf(maxOf(paceMs * 2, PACE_START_MS), PACE_MAX_MS)
-                    sinceThrottle = 0
-                }
-                holdUntil = System.currentTimeMillis() + waitMs
+                // Set the hold and let the top of the loop do the sleeping:
+                // sleeping here as well would wait TWICE.
+                pacer.throttled(waitMs)
                 onRateLimit(waitMs)
                 continue
             }
@@ -307,16 +179,7 @@ class SpotifyClient(
                     "If this is the first run after an update, sign in to Spotify again — " +
                     "a new permission was added.")
             }
-            // A long run of successes eases the gap back, so one bad patch
-            // does not slow the rest of a two-hour migration for ever.
-            if (paceMs > 0) {
-                synchronized(paceLock) {
-                    if (++sinceThrottle >= PACE_DECAY_AFTER) {
-                        sinceThrottle = 0
-                        paceMs = if (paceMs <= PACE_START_MS) 0L else paceMs * 3 / 4
-                    }
-                }
-            }
+            pacer.succeeded()
 
             if (!res.ok) {
                 throw RuntimeException("Spotify HTTP ${res.status}: ${messageFrom(res.body)}")
@@ -505,8 +368,6 @@ class SpotifyClient(
      * report is the actual deliverable of a migration.
      *
      * It costs one extra request only for albums that currently find nothing.
-     *
-     * Kept in step with lib/spotify.js by hand.
      */
     override fun searchAlbums(title: String, artist: String): List<Album> {
         val strict = "album:${quoteTerm(title)}" +
@@ -596,81 +457,44 @@ class SpotifyClient(
                 body = JSONObject().put("ids", org.json.JSONArray(batch)).toString())
         }
     }
-}
 
-// ---------------------------------------------------------- shape conversion
+    // --------------------------------------------------------------- removals
+    //
+    // The mirror image of the saves, for a clear-out. The ids go in the QUERY
+    // STRING, not a JSON body: a body on a DELETE is something HTTP clients
+    // disagree about (older HttpURLConnection refused to send one at all), and
+    // Spotify documents the query form for every one of these. Its maxima
+    // there are 50 for tracks and artists and TWENTY for albums, so albums are
+    // chunked at 20 — Clearance batches at the same numbers, which keeps one
+    // of its batches to exactly one request and makes a failed batch mean
+    // exactly the ids it names.
 
-/**
- * A Spotify track object in this app's shape, or null if it is not a track we
- * can migrate.
- *
- * The nulls matter. A playlist can contain a PODCAST EPISODE (no ISRC, no
- * artist, an id that is not a track id) and a LOCAL FILE (a track object whose
- * id is null, existing only on that person's machine). Both arrive inside
- * items[].track looking close enough to a track to crash a naive mapper, and
- * neither can be migrated to anything.
- */
-internal fun toTrack(t: JSONObject?): Track? {
-    if (t == null) return null
-    val type = t.str("type")
-    if (type.isNotEmpty() && type != "track") return null
-    val id = t.strOrNull("id") ?: return null
-    return Track(
-        id = id,
-        isrc = t.objOrNull("external_ids")?.str("isrc").orEmpty(),
-        title = t.str("name"),
-        artists = t.arrOrNull("artists")?.objects()?.mapNotNull { it.strOrNull("name") }
-            .orEmpty(),
-        album = t.objOrNull("album")?.str("name").orEmpty(),
-        durationMs = t.longOrNull("duration_ms")?.takeIf { it > 0 }
-    )
-}
-
-/** As toTrack, but reporting WHY an item was skipped so the job can say so. */
-internal fun fromPlaylistItem(item: JSONObject?): Track? {
-    if (item == null) return null
-    if (item.optBoolean("is_local", false)) {
-        return Track(id = "local", title = item.objOrNull("track")?.str("name")
-            ?.takeIf { it.isNotEmpty() } ?: "a local file", skip = "local file")
+    override fun unsaveTracks(trackIds: List<String>) {
+        for (batch in chunk(trackIds, 50)) {
+            request("DELETE", "/me/tracks", mapOf("ids" to batch.joinToString(",")))
+        }
     }
-    val raw = item.objOrNull("track")
-    val t = toTrack(raw)
-    if (t != null) return t
-    if (raw?.str("type") == "episode") {
-        return Track(id = "episode",
-            title = raw.strOrNull("name") ?: "an episode", skip = "podcast episode")
+
+    override fun unsaveAlbums(albumIds: List<String>) {
+        for (batch in chunk(albumIds, 20)) {
+            request("DELETE", "/me/albums", mapOf("ids" to batch.joinToString(",")))
+        }
     }
-    return null
+
+    override fun unfollowArtists(artistIds: List<String>) {
+        for (batch in chunk(artistIds, 50)) {
+            request("DELETE", "/me/following",
+                mapOf("type" to "artist", "ids" to batch.joinToString(",")))
+        }
+    }
+
+    /**
+     * Spotify has no "delete playlist": deleting your own playlist IS
+     * unfollowing it (it then disappears from your library and from your
+     * profile), and unfollowing somebody else's leaves it with them. One call
+     * either way, so [owned] only matters on the Qobuz side.
+     */
+    override fun removePlaylist(playlistId: String, owned: Boolean) {
+        request("DELETE", "/playlists/${urlEncode(playlistId)}/followers")
+    }
 }
-
-internal fun toAlbum(a: JSONObject?): Album? {
-    if (a == null) return null
-    val id = a.strOrNull("id") ?: return null
-    return Album(
-        id = id,
-        upc = a.objOrNull("external_ids")?.str("upc").orEmpty(),
-        title = a.str("name"),
-        artists = a.arrOrNull("artists")?.objects()?.mapNotNull { it.strOrNull("name") }
-            .orEmpty(),
-        trackCount = a.intOrNull("total_tracks"),
-        year = a.str("release_date").take(4).toIntOrNull()
-    )
-}
-
-/**
- * A search term, quoted.
- *
- * A double quote inside the term ends the quoted phrase and turns the rest
- * into loose words — so a track called 'The "Real" Thing' searched raw finds
- * nothing and looks like the track is missing. Spotify has no escape for it
- * inside a quoted phrase, so the quote is dropped rather than escaped.
- */
-internal fun quoteTerm(s: String): String = "\"" + s.replace("\"", " ").trim() + "\""
-
-internal fun chunk(list: List<String>, n: Int): List<List<String>> =
-    list.filter { it.isNotEmpty() }.chunked(n)
-
-internal fun messageFrom(text: String): String =
-    parseObject(text)?.let { j ->
-        j.objOrNull("error")?.strOrNull("message") ?: j.strOrNull("error")
-    } ?: text.take(160)
