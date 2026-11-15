@@ -228,8 +228,7 @@ Android will refuse to install it over the copy already on the phone — that is
 the whole reason this is a stored secret rather than a key made per run.
 
 (The key that signed MusicD Migrate up to 0.3.4 was not kept, which is why
-0.4.0 needs the old app uninstalled once. `dist/mandarin-migration-0.4.0.apk`,
-while it is still there, is signed with that old key.)
+0.4.0 needs the old app uninstalled once.)
 
 To let CI do the publishing, add the keystore as two repository secrets under
 **Settings → Secrets and variables → Actions**:
