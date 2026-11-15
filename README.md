@@ -126,7 +126,7 @@ everything already removed removed; run it again to finish.
 
 ## Install
 
-**Download: [`dist/mandarin-migration-0.4.0.apk`](dist/mandarin-migration-0.4.0.apk)**
+**Download: [`dist/mandarin-migration-0.5.0.apk`](dist/mandarin-migration-0.5.0.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
