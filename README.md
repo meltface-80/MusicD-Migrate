@@ -170,7 +170,7 @@ it contains all of it — and the report says which edition you got.
 
 ## Install
 
-**Download: [`dist/musicd-migrate-0.3.4.apk`](dist/musicd-migrate-0.3.4.apk)**
+**Download: [`dist/mandarin-migration-0.4.0.apk`](dist/mandarin-migration-0.4.0.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
@@ -228,7 +228,7 @@ Android will refuse to install it over the copy already on the phone — that is
 the whole reason this is a stored secret rather than a key made per run.
 
 (The key that signed MusicD Migrate up to 0.3.4 was not kept, which is why
-0.4.0 needs the old app uninstalled once. `dist/musicd-migrate-0.3.4.apk`,
+0.4.0 needs the old app uninstalled once. `dist/mandarin-migration-0.4.0.apk`,
 while it is still there, is signed with that old key.)
 
 To let CI do the publishing, add the keystore as two repository secrets under

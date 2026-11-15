@@ -1,6 +1,6 @@
 {
-  "version": "0.3.4",
-  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/musicd-migrate-0.3.4.apk",
-  "sha256": "eb031669c7fab8d2a13c8f4877b6ca023a5218fc5c9f292117000b14ce3be392",
-  "notes": "Your Roon to Spotify run finished: 9,681 albums, 73.9% found, and not one failed lookup — the rate limiting was survived. This release goes after the biggest remaining bucket. Spotify's album search was asked as album:\"X\" artist:\"Y\", a quoted AND of two field filters, which returns ZERO rows on any difference of spelling on either side — so the matcher never even saw a candidate. Spotify calls them \"Thirty Seconds to Mars\" and \"King Gizzard & The Lizard Wizard\"; Roon does not. 1,969 of your albums came back \"the search returned nothing\", against 908 for the same library on Qobuz, whose search is plain text. So when the filtered query finds nothing it now asks again as free text. This does not loosen what is ACCEPTED — an album still needs a barcode, or title and artist and a matching track listing — only what is considered, and even where it still refuses you get a reason you can act on instead of \"nothing called that\". Honest caveat: most of that 26% gap looks like a real catalogue difference. Only 118 albums were ones a Qobuz SEARCH found and Spotify's missed; 747 were records you already own on Qobuz, which says nothing about Spotify."
+  "version": "0.4.0",
+  "url": "https://github.com/meltface-80/MusicD-Migrate/raw/main/dist/mandarin-migration-0.4.0.apk",
+  "sha256": "3ef53e2c155e02b2054e38f0c287469acbb36ebe97c4182fdbfd659925350a66",
+  "notes": "Built from 5211d42143ae086915beca3ef1a28b7f5344683f."
 }
