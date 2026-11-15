@@ -198,8 +198,15 @@ jobs:
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
-          got=$("$apksigner" verify --print-certs "$apk" \
-                | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          # apksigner names a signer "Signer #1" or, when the APK carries
+          # signatures scoped to SDK ranges, "Signer (minSdkVersion=…)". The
+          # first version of this only knew the former and failed the first
+          # signed build ever run here. The full output goes to the log so a
+          # third spelling is diagnosable from the run.
+          out=$("$apksigner" verify --print-certs "$apk")
+          echo "$out"
+          got=$(printf '%s\n' "$out" \
+                | sed -n -E 's/^Signer[^:]*certificate SHA-256 digest: *//p' | head -1)
           if [ -z "$got" ]; then
             echo "::error::could not read a signing certificate out of $apk"
             exit 1
