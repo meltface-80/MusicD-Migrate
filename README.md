@@ -288,7 +288,7 @@ fails if a build is ever signed with anything else. It was produced with:
 
 ```bash
 apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk \
-  | sed -n -E 's/^Signer[^:]*certificate SHA-256 digest: *//p' | head -1 > tools/release-key.sha256
+  | sed -n -E 's/^.*Signer.*certificate SHA-256 digest: *//p' | head -1 > tools/release-key.sha256
 ```
 
 If the file is ever removed the key is simply not pinned, and the job says so in
