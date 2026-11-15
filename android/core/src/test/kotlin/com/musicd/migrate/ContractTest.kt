@@ -62,7 +62,8 @@ class ContractTest {
             .toSortedSet()
 
         assertTrue("the page should call a good few routes, found $literals",
-            literals.size >= 10)
+            literals.size >= 8)
+        assertTrue("the page should upload a library file", literals.contains("/api/import/file"))
         assertTrue("the page should call the clear-out route", literals.contains("/api/clear"))
 
         assertEquals("routes the page calls but the APK does not serve",
@@ -107,24 +108,6 @@ class ContractTest {
     }
 
     /**
-     * The baked-in Client ID is the one the README says it is.
-     *
-     * The README appendix is where the owner goes looking when a sign-in stops
-     * working, and it says whose id this is and what using it costs. An id
-     * changed in the code and not there is a caveat quietly dropped.
-     */
-    @Test fun `the baked-in Spotify Client ID is the one the README names`() {
-        val root = repoRoot()
-        assumeTrue("not running from the repository", root != null)
-
-        assertTrue("a Spotify Client ID is 32 hex characters, not ${Pkce.DEFAULT_CLIENT_ID}",
-            Regex("^[0-9a-f]{32}$").matches(Pkce.DEFAULT_CLIENT_ID))
-        val readme = File(root, "README.md").readText()
-        assertTrue("the README appendix must quote the id the code actually uses",
-            readme.contains(Pkce.DEFAULT_CLIENT_ID))
-    }
-
-    /**
      * Every option the page SENDS is read by the server — for a migration and
      * for a clear-out.
      *
@@ -162,7 +145,7 @@ class ContractTest {
         }
 
         val migrate = sentIn("body")
-        assertTrue("the page should send a good few options, found $migrate", migrate.size >= 8)
+        assertTrue("the page should send the import options, found $migrate", migrate.size >= 4)
         assertTrue("dryRun is the one that must never be missed", migrate.contains("dryRun"))
         assertEquals("migrate options the page sends that the APK never reads",
             emptyList<String>(), (migrate - readBy("migrate")).toList())

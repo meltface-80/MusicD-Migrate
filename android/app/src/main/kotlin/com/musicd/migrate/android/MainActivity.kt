@@ -37,6 +37,9 @@ class MainActivity : Activity() {
 
     private lateinit var web: WebView
 
+    /** The import card's file picker. See FilePicker. */
+    private val picker = FilePicker(this)
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,13 +48,17 @@ class MainActivity : Activity() {
 
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true   // the page remembers a PIN there
+            settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             // Nothing here loads a file:// or content:// URL, and turning
             // these off costs nothing. The page is served over http from
             // loopback.
             settings.allowFileAccess = false
-            settings.allowContentAccess = false
+            // ON, for one reason: the library file the user picks reaches the
+            // page as a content:// URI, and an upload that silently reads
+            // nothing is the failure to avoid. The page itself only ever
+            // loads from loopback.
+            settings.allowContentAccess = true
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 settings.safeBrowsingEnabled = false // it is our own loopback
             }
@@ -60,8 +67,8 @@ class MainActivity : Activity() {
 
             webViewClient = object : WebViewClient() {
                 /**
-                 * The sign-ins happen on qobuz.com and accounts.spotify.com,
-                 * and they must open in a REAL BROWSER, not in here.
+                 * The sign-in happens on qobuz.com, and it must open in a REAL
+                 * BROWSER, not in here.
                  *
                  * Two reasons, and the second is the important one. A WebView
                  * does not share the browser's cookies, so signing in here
@@ -83,6 +90,10 @@ class MainActivity : Activity() {
                     return true
                 }
             }
+
+            // <input type="file"> does nothing in a WebView without this.
+            // See FilePicker.
+            webChromeClient = picker.client
 
             /**
              * A WebView does NOTHING with a download unless the app says what
@@ -425,6 +436,12 @@ class MainActivity : Activity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /** The file picker's answer. See FilePicker. */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (picker.onResult(requestCode, resultCode, data)) return
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onResume() {

@@ -360,3 +360,11 @@ button.danger-btn:disabled { background: var(--bg); color: var(--ink-dim); borde
   .opt { flex-wrap: wrap; }
   .opt select, .opt input[type="text"] { margin-left: 0; width: 100%; }
 }
+
+/* ----------------------------------------------------------------- import */
+
+.summary { margin: 10px 0 4px; }
+.warnings { margin: 6px 0; padding-left: 20px; color: var(--warn); font-size: .9rem; }
+.warnings:empty { display: none; }
+.warnings li { margin: 3px 0; }
+label.btn { cursor: pointer; }

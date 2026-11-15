@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Mandarin Migration</string>
     <string name="channel_name">Migration</string>
-    <string name="channel_description">Shown while a migration or a clear-out is running,
+    <string name="channel_description">Shown while an import or a clear-out is running,
         so it is not stopped when the screen goes off.</string>
-    <string name="notification_text">Working on your Qobuz and Spotify libraries — open to follow along.</string>
+    <string name="notification_text">Working on your Qobuz library — open to follow along.</string>
 </resources>

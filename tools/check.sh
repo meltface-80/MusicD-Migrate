@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Everything that must pass before a push, in one place. None of it needs a
-# Qobuz or Spotify account: the clients are driven by a fake HTTP layer and the
+# Qobuz account: the client is driven by a fake HTTP layer and the
 # engines by fake services. The APK build itself is separate — see CLAUDE.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."

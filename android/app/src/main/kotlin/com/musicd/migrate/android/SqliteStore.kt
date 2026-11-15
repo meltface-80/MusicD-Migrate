@@ -21,7 +21,7 @@ import com.musicd.migrate.Store
  */
 class SqliteStore(context: Context) : Store {
 
-    private val helper = object : SQLiteOpenHelper(context, "migrate.db", null, 3) {
+    private val helper = object : SQLiteOpenHelper(context, "migrate.db", null, 4) {
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL("""
                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
@@ -49,7 +49,7 @@ class SqliteStore(context: Context) : Store {
 
         override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
             // Migrating, never dropping. An installed copy of this app holds
-            // two services' sign-ins and a match cache that cost hours of
+            // a sign-in and a match cache that cost hours of
             // rate-limited lookups to build; recreating the database would
             // throw both away and look like the app had signed itself out.
             //
@@ -60,6 +60,11 @@ class SqliteStore(context: Context) : Store {
             // are untouched.
             db.execSQL("DROP TABLE IF EXISTS roon_albums")
             db.delete("settings", "key LIKE ?", arrayOf("roon.%"))
+            // Version 4: Spotify was removed in 0.5.0, so its stored sign-in —
+            // an access token and a refresh token that would otherwise sit on
+            // the phone for nothing — is deleted. The Qobuz sign-in, the match
+            // cache and the job history are untouched.
+            db.delete("settings", "key LIKE ?", arrayOf("spotify.%"))
         }
 
         override fun onConfigure(db: SQLiteDatabase) {

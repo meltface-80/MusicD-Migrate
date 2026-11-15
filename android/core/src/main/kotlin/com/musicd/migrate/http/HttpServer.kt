@@ -203,7 +203,13 @@ class HttpServer(
         private const val BIND_WAIT_MS = 25L
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_HEADER_BYTES = 32 * 1024
-        private const val MAX_BODY_BYTES = 4 * 1024 * 1024
+        /**
+         * Large enough for a library FILE: a one-row-per-track export of a
+         * ten-thousand-album library is around 20MB. The server is loopback
+         * only and the parser streams from these bytes, so the cost is the
+         * body itself, held once.
+         */
+        private const val MAX_BODY_BYTES = 48 * 1024 * 1024
 
         /**
          * THE RETRY IS NOT POLITENESS. For a few milliseconds after a close

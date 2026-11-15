@@ -15,19 +15,11 @@
   // again. The real run needs the service's name typed, and the server checks
   // that name itself rather than trusting this page.
 
+  // Qobuz is the only library there is since 0.5.0; the server still checks.
   var clearService = "qobuz";
   var clearPreview = null;      // { key, jobId, count } of the last finished preview
   var pendingClearKey = null;   // the selection a running preview was started for
 
-  Array.prototype.forEach.call(document.querySelectorAll(".clr"), function (b) {
-    b.addEventListener("click", function () {
-      clearService = b.getAttribute("data-service");
-      Array.prototype.forEach.call(document.querySelectorAll(".clr"), function (x) {
-        x.classList.toggle("on", x === b);
-      });
-      renderClear();
-    });
-  });
   ["c-tracks", "c-albums", "c-artists", "c-playlists", "c-others"].forEach(function (id) {
     $(id).addEventListener("change", renderClear);
   });

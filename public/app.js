@@ -1,13 +1,14 @@
 "use strict";
 /*
- * app.js — the front-end's plumbing, its state, the sign-ins and the
- * migration setup. run.js (progress, results, history) and clear.js (the
- * clear-out card) are loaded after it and share `window.Mandarin` with it.
+ * app.js — the front-end's plumbing, its state and the Qobuz sign-in.
+ * import.js (the library-file card), run.js (progress, results, history) and
+ * clear.js (the clear-out card) are loaded after it and share
+ * `window.Mandarin` with it.
  *
  * THE PAGE IS THE AUTHORITY ON EVERY API FIELD NAME, not the server. This
  * directory is bundled unchanged into the Android APK, where MigrateApi.kt
  * answers the /api/ routes — and nothing compiles the two together, so
- * ContractTest reads this file to check every route and option it sends is
+ * ContractTest reads these files to check every route and option they send is
  * served and read there. Anything added here has to be added there too.
  *
  * Vanilla, no build step, and it must stay that way: the APK bundles this
@@ -16,8 +17,6 @@
 
 (function (M) {
   var state = null;
-  var playlists = [];
-  var chosen = new Set();
   M.currentJob = null;
 
   // ------------------------------------------------------------ plumbing
@@ -85,27 +84,6 @@
     $("qobuz-body").hidden = q.signedIn;
     $("qobuz-signout").hidden = !q.signedIn;
 
-    // Spotify
-    var sp = state.spotify;
-    $("spotify-dot").className = "dot" + (sp.signedIn ? " on" : "");
-    $("spotify-who").textContent = sp.signedIn ? (sp.name || "signed in") : "not signed in";
-    $("spotify-body").hidden = sp.signedIn;
-    $("spotify-signout").hidden = !sp.signedIn;
-    $("redirect-uri").textContent = sp.redirectUri || "";
-    if (sp.clientId && !$("spotify-client-id").value) {
-      $("spotify-client-id").value = sp.clientId;
-    }
-    // The redirect address this app would actually hand Spotify, checked
-    // against Spotify's loopback rule BEFORE a sign-in is spent finding out.
-    var warn = $("redirect-warn");
-    if (sp.redirectCheck && !sp.redirectCheck.ok) {
-      warn.textContent = sp.redirectCheck.reason;
-      warn.hidden = false;
-    } else {
-      warn.hidden = true;
-    }
-    if (sp.clientId) $("spotify-setup").open = false;
-
     $("cache-note").textContent = state.cacheSize
       ? state.cacheSize + " cached lookups — a re-run reuses these"
       : "no cached lookups yet";
@@ -114,27 +92,20 @@
     $("go").disabled = !!blocked;
     $("go-hint").textContent = blocked || "";
 
-    updateGoLabel();
-    renderPlaylistSection();
+    M.renderImport();
     M.renderClear();
   }
 
   /**
-   * What is stopping a migration, or "" — named specifically.
+   * What is stopping an import, or "" — named specifically.
    */
   function whyNotReady() {
     if (!state) return "Loading…";
-    var ends = direction.split("-to-");
-    for (var i = 0; i < ends.length; i++) {
-      var why = signInNeeded(ends[i]);
-      if (why) return why;
-    }
-    return "";
+    return signInNeeded("qobuz") || (state["import"] ? "" : "Choose a library file first.");
   }
 
   function signInNeeded(service) {
     if (service === "qobuz" && !state.qobuz.signedIn) return "Sign in to Qobuz first.";
-    if (service === "spotify" && !state.spotify.signedIn) return "Sign in to Spotify first.";
     return "";
   }
 
@@ -161,57 +132,6 @@
     api("/api/qobuz/signout", { method: "POST" }).then(refresh).catch(fail);
   });
 
-  // ----------------------------------------------------------- Spotify
-
-  $("spotify-save-id").addEventListener("click", function () {
-    api("/api/spotify/client-id", { method: "POST", body: {
-      clientId: $("spotify-client-id").value.trim() } })
-      .then(function () { toast("Client ID saved."); }).then(refresh).catch(fail);
-  });
-  $("spotify-start").addEventListener("click", function () {
-    if (!state || !state.spotify.clientId) {
-      return toast("Save your Spotify Client ID first.");
-    }
-    openAuth("/api/spotify/oauth/start");
-  });
-  $("spotify-manual-toggle").addEventListener("click", function () {
-    $("spotify-manual").hidden = !$("spotify-manual").hidden;
-  });
-  $("spotify-paste-go").addEventListener("click", function () {
-    api("/api/spotify/paste", { method: "POST", body: { url: $("spotify-paste").value } })
-      .then(function () { $("spotify-paste").value = ""; toast("Signed in to Spotify."); })
-      .then(refresh).catch(fail);
-  });
-  $("spotify-signout").addEventListener("click", function () {
-    api("/api/spotify/signout", { method: "POST" }).then(refresh).catch(fail);
-  });
-
-  $("redirect-uri").addEventListener("click", copyRedirect);
-  $("redirect-uri").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copyRedirect(); }
-  });
-  function copyRedirect() {
-    var text = $("redirect-uri").textContent;
-    if (!text) return;
-    // Clipboard access needs a secure context, which plain http on a LAN
-    // address is not. Selecting the text is the honest fallback — telling
-    // someone it was copied when it was not is worse than not copying.
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(function () { toast("Copied."); },
-        function () { selectNode($("redirect-uri")); toast("Select and copy it."); });
-    } else {
-      selectNode($("redirect-uri"));
-      toast("Select and copy it.");
-    }
-  }
-  function selectNode(node) {
-    var r = document.createRange();
-    r.selectNodeContents(node);
-    var sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-  }
-
   /**
    * Open a sign-in.
    *
@@ -236,150 +156,7 @@
     if (!M.currentJob) refresh().catch(function () {});
   });
 
-  // ---------------------------------------------------------- direction
-
-  // Scoped to the migration card: the clear-out card reuses the look of these
-  // buttons for its own choice, and must not be caught by this handler.
-  var direction = "qobuz-to-spotify";
-  Array.prototype.forEach.call(document.querySelectorAll("#setup .dir"), function (b) {
-    b.addEventListener("click", function () {
-      if (direction === b.getAttribute("data-dir")) return;
-      direction = b.getAttribute("data-dir");
-      Array.prototype.forEach.call(document.querySelectorAll("#setup .dir"), function (x) {
-        x.classList.toggle("on", x === b);
-      });
-      // The playlist list belongs to the SOURCE service, so switching
-      // direction invalidates it entirely. Keeping it would show Spotify
-      // playlists while migrating from Qobuz.
-      playlists = [];
-      chosen.clear();
-      render();
-    });
-  });
-
-  function sourceService() { return direction.split("-to-")[0]; }
-
-  // ---------------------------------------------------------- playlists
-
-  $("k-playlists").addEventListener("change", renderPlaylistSection);
-  $("o-dry").addEventListener("change", updateGoLabel);
-  $("pl-load").addEventListener("click", function () { loadPlaylists(true); });
-  $("pl-all").addEventListener("click", function () {
-    playlists.forEach(function (p) { chosen.add(p.id); });
-    renderPlaylists();
-  });
-  $("pl-none").addEventListener("click", function () {
-    chosen.clear();
-    renderPlaylists();
-  });
-
-  function renderPlaylistSection() {
-    // Both sign-ins, not just the source's: the picker is part of a migration
-    // that cannot start without both, and an empty list box on a page where
-    // nothing is signed in reads as "you have no playlists".
-    var want = $("k-playlists").checked && !whyNotReady();
-    $("playlist-pick").hidden = !want;
-    if (!want) return;
-    if (!playlists.length) loadPlaylists(false);
-    else renderPlaylists();
-  }
-
-  var loading = false;
-  function loadPlaylists(force) {
-    if (loading) return;
-    if (playlists.length && !force) { renderPlaylists(); return; }
-    loading = true;
-    $("pl-count").textContent = "reading…";
-    api("/api/playlists?service=" + sourceService()).then(function (j) {
-      playlists = j.playlists || [];
-      // Everything the user owns starts ticked; playlists they merely follow
-      // do not, matching the server's own default.
-      chosen = new Set(playlists.filter(function (p) { return p.mine; })
-                                .map(function (p) { return p.id; }));
-      renderPlaylists();
-    }).catch(function (e) {
-      $("pl-count").textContent = "";
-      fail(e);
-    }).then(function () { loading = false; });
-  }
-
-  function renderPlaylists() {
-    var list = $("pl-list");
-    list.textContent = "";
-    $("pl-count").textContent = playlists.length
-      ? chosen.size + " of " + playlists.length + " selected"
-      : "none found";
-
-    playlists.forEach(function (p) {
-      var label = document.createElement("label");
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = chosen.has(p.id);
-      cb.addEventListener("change", function () {
-        if (cb.checked) chosen.add(p.id); else chosen.delete(p.id);
-        $("pl-count").textContent = chosen.size + " of " + playlists.length + " selected";
-      });
-      label.appendChild(cb);
-
-      var name = document.createElement("span");
-      // textContent, never innerHTML: a playlist name is somebody else's text
-      // and can contain anything at all.
-      name.textContent = p.name || "(untitled)";
-      label.appendChild(name);
-
-      if (!p.mine) {
-        var tag = document.createElement("span");
-        tag.className = "tag";
-        tag.textContent = "followed";
-        label.appendChild(tag);
-      }
-
-      var n = document.createElement("span");
-      n.className = "n";
-      n.textContent = p.trackCount + (p.trackCount === 1 ? " track" : " tracks");
-      label.appendChild(n);
-
-      list.appendChild(label);
-    });
-  }
-
-  // --------------------------------------------------------------- run
-
-  function updateGoLabel() {
-    $("go").textContent = $("o-dry").checked ? "Preview" : "Migrate";
-  }
-
-  $("go").addEventListener("click", function () {
-    var body = {
-      direction: direction,
-      playlists: $("k-playlists").checked
-        ? (playlists.length ? Array.from(chosen) : true)
-        : false,
-      albums: $("k-albums").checked,
-      artists: $("k-artists").checked,
-      tracks: $("k-tracks").checked,
-      dryRun: $("o-dry").checked,
-      strict: $("o-strict").checked,
-      corroborate: $("o-corroborate").checked,
-      includeOthersPlaylists: $("o-others").checked,
-      onExisting: $("o-existing").value,
-      playlistSuffix: $("o-suffix").value
-    };
-    if (!body.playlists && !body.albums && !body.artists && !body.tracks) {
-      return toast("Pick at least one thing to move.");
-    }
-    if (Array.isArray(body.playlists) && !body.playlists.length &&
-        !body.albums && !body.artists && !body.tracks) {
-      return toast("No playlists are selected.");
-    }
-    $("go").disabled = true;
-    api("/api/migrate", { method: "POST", body: body })
-      .then(function (j) { M.watch(j.jobId); })
-      .catch(function (e) { $("go").disabled = false; fail(e); });
-  });
-
-
-  // What the other two scripts use. Shared through one object rather than
+  // What the other scripts use. Shared through one object rather than
   // globals, so the lint's no-undef still catches a name that does not exist.
   M.$ = $;
   M.api = api;

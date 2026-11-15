@@ -101,8 +101,10 @@ class ClearApiTest : ApiFixtures() {
         val none = post(api(signedIn()), "/api/clear", """{"service":"qobuz"}""")
         assertEquals(400, none.status)
         assertTrue(none.body.toString(Charsets.UTF_8).contains("Pick at least one"))
-        val out = post(api(), "/api/clear", """{"service":"spotify","albums":true}""")
+        val gone = post(api(signedIn()), "/api/clear", """{"service":"spotify","albums":true}""")
+        assertEquals("Spotify is not a library this version can clear", 400, gone.status)
+        val out = post(api(), "/api/clear", """{"service":"qobuz","albums":true}""")
         assertEquals(400, out.status)
-        assertTrue(out.body.toString(Charsets.UTF_8).contains("Sign in to Spotify"))
+        assertTrue(out.body.toString(Charsets.UTF_8).contains("Sign in to Qobuz"))
     }
 }

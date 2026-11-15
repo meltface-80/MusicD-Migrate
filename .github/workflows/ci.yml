@@ -176,7 +176,7 @@ jobs:
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           mkdir -p /tmp/apkweb
-          for f in index.html app.js run.js clear.js style.css manifest.json; do
+          for f in index.html app.js import.js run.js clear.js style.css manifest.json; do
             unzip -p "$apk" "assets/web/$f" > "/tmp/apkweb/$f"
             cmp "/tmp/apkweb/$f" "public/$f" \
               || (echo "::error::assets/web/$f in the APK differs from public/$f" && exit 1)

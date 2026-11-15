@@ -283,13 +283,13 @@ class Clearance(
         /**
          * Ids per removal request, by kind.
          *
-         * The strictest of the two services' maxima, and the clients chunk at
-         * the same numbers, so one batch here is exactly one request and a
-         * failed batch names exactly the ids that were not removed. Spotify
-         * takes twenty album ids per DELETE, fifty of anything else.
+         * The service's maximum, and the client chunks at the same numbers, so one batch here is exactly one request and a
+         * failed batch names exactly the ids that were not removed. (Albums
+         * were twenty while Spotify, which takes no more per DELETE, was
+         * supported.)
          */
         const val TRACK_BATCH = 50
-        const val ALBUM_BATCH = 20
+        const val ALBUM_BATCH = 50
         const val ARTIST_BATCH = 50
 
         /** See [noteFailedBatch]. */

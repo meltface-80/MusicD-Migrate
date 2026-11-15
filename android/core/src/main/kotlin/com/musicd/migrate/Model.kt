@@ -3,11 +3,11 @@ package com.musicd.migrate
 /*
  * Model.kt — the shapes everything else speaks in.
  *
- * These are deliberately NOT either service's shapes. SpotifyClient and
- * QobuzClient each convert into these and nothing downstream — the matcher,
- * the migration, the API — knows which service anything came from. That is
- * what makes "Qobuz to Spotify" and "Spotify to Qobuz" one code path instead
- * of two that drift.
+ * These are deliberately NOT any service's shapes. QobuzClient and CsvLibrary
+ * each convert into these and nothing downstream — the matcher, the
+ * migration, the API — knows where anything came from. That is what lets a
+ * library file be imported by the same engine that once moved Spotify
+ * libraries, and would let another service be added back without a fork.
  *
  * Durations are MILLISECONDS everywhere, including on the Qobuz side where the
  * service counts in seconds. QobuzClient converts; nothing else needs to know.
@@ -80,6 +80,18 @@ interface MusicSource {
      * Match.tracklistCorroborates.
      */
     fun albumTracks(albumId: String): List<Track>
+
+    /**
+     * Why this album cannot be matched from what the source knows, or null.
+     *
+     * A library FILE is the case: a row with no barcode and no track listing
+     * leaves title and artist, which are not decisive. Without this the engine
+     * would ask for the listing, get nothing, and record a FAILED read — red,
+     * uncached, and fifty of them trip the breaker meant for a broken check.
+     * It is not broken; the evidence is simply not in the file, which is an
+     * ordinary refusal with a reason. Only asked when the listing check is on.
+     */
+    fun unmatchable(album: Album): String? = null
 }
 
 /**
@@ -102,11 +114,9 @@ interface MusicTarget : MusicSource {
     /**
      * Albums by BARCODE — the album's answer to [searchByIsrc].
      *
-     * Spotify's album search returns SimplifiedAlbumObject, which carries no
-     * external_ids and therefore no barcode, so the matcher's barcode tier
-     * could never fire against a search result. The `upc:` filter is the fix;
-     * see SpotifyClient.searchByUpc for why the returned albums are stamped
-     * with the code that was searched for, and when they are not.
+     * Searched FOR rather than compared afterwards: a service whose album
+     * search returns no barcode (Spotify's did not) would otherwise leave the
+     * barcode tier unable to fire. QobuzClient's results carry the code.
      */
     fun searchByUpc(upc: String): List<Album>
     fun searchArtists(name: String): List<Artist>
@@ -133,9 +143,8 @@ interface MusicTarget : MusicSource {
      *
      * @param owned whether the signed-in user made it. An owned playlist is
      *   DELETED; one they merely follow is UNFOLLOWED, and the playlist itself
-     *   carries on existing for its owner. On Spotify both are the same call
-     *   (deleting your own playlist is unfollowing it); on Qobuz they are two
-     *   different endpoints, and the wrong one fails.
+     *   carries on existing for its owner. On Qobuz they are two different
+     *   endpoints, and the wrong one fails.
      */
     fun removePlaylist(playlistId: String, owned: Boolean)
 }

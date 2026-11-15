@@ -86,7 +86,7 @@ def check_config():
     if stray:
         fail(f"cleartext is permitted for non-loopback hosts {sorted(stray)}. "
              "Every destination that leaves the device must be HTTPS — this "
-             "app holds Qobuz and Spotify access tokens.")
+             "app holds a Qobuz access token.")
 
     print(f"ok: cleartext permitted for exactly {sorted(permitted)}")
 

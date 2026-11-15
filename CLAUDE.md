@@ -1,8 +1,16 @@
 # Working on this repository
 
-Mandarin Migration (formerly MusicD Migrate) is an **Android app only**. There
-is no Node server and no Docker build any more, and no Roon support: those were
-removed in 0.4.0 at the owner's request. The Android package id stays
+Mandarin Migration (formerly MusicD Migrate) is an **Android app only**, and
+since 0.5.0 it is **Qobuz only**: it imports a library FILE (a CSV from the
+owner's Mandarin server or any other software) into Qobuz favourite albums,
+and it can clear a Qobuz library. Spotify was removed in 0.5.0, and Roon, the
+Node server and the Docker build in 0.4.0 — all at the owner's request, "until
+decided otherwise". The engine underneath is still service-neutral
+(`MusicSource` / `MusicTarget`), so bringing a service back is a client and a
+sign-in, not a rewrite. The last commit with Spotify is `c6d3de0` on `main`:
+its client, its tests and the hard-won Spotify rules (rate-limit pacing,
+`Retry-After`, the `upc:` search filter, shared refresh tokens, the `/login`
+redirect, the baked-in Client ID) are all there. The Android package id stays
 `com.musicd.migrate` — do not change it.
 
 0.4.0 is also signed with a NEW key, `CN=Mandarin Migration`, made at the
@@ -24,8 +32,8 @@ below).
 
 ## What "tested" means here, concretely
 
-Run all of these before pushing. None is optional, and none needs a Qobuz or
-Spotify account.
+Run all of these before pushing. None is optional, and none needs a Qobuz
+account.
 
 ```bash
 npm run check          # runs every line below, in order
@@ -37,7 +45,7 @@ npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the po
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 207 tests
+cd android && ./gradlew :core:test                          # 193 tests
 ```
 
 If `dl.google.com` is unreachable (it is blocked in some cloud sandboxes),
@@ -144,9 +152,9 @@ Concretely, and do not relax any of these without a very good argument:
 
 `public/` is **bundled unchanged into the APK** and served there by
 `MigrateApi.kt` from a loopback HTTP server. It is three scripts sharing one
-object, `window.Mandarin`: `app.js` (plumbing, state, sign-ins, migration
-setup, start-up), `run.js` (progress, results, history) and `clear.js` (the
-clear-out card). Start-up waits for `DOMContentLoaded` so all three have
+object, `window.Mandarin`: `app.js` (plumbing, state, the Qobuz sign-in,
+start-up), `import.js` (the library-file card), `run.js` (progress, results,
+history) and `clear.js` (the clear-out card). Start-up waits for `DOMContentLoaded` so all three have
 registered; anything one script needs from another goes through
 `window.Mandarin`, never a global.
 
@@ -156,9 +164,8 @@ names rather than reading what the page actually calls.
 
 `ContractTest.kt` reads every `public/*.js` and fails on a route the page calls
 that is not served, an option the page sends in `var body` (a migration) or
-`var clearBody` (a clear-out) that the server never reads, the README's Client
-ID disagreeing with `Pkce.DEFAULT_CLIENT_ID`, and `optString` escaping
-`Json.kt`. It does not catch a renamed JSON *field*: `ApiTest.kt` asserts the
+`var clearBody` (a clear-out) that the server never reads, and `optString`
+escaping `Json.kt`. It does not catch a renamed JSON *field*: `ApiTest.kt` asserts the
 field names; keep them in step with the page by hand.
 
 Those tests read files outside `:core`, so `core/build.gradle.kts` declares
@@ -168,6 +175,50 @@ case the contract tests exist for.
 
 `public/` has no build step and must not acquire one. The APK bundles the
 directory as-is, and CI compares every file the page loads against the APK.
+
+## Importing a library file
+
+`Csv.kt` reads the file and `CsvLibrary.kt` turns it into a `MusicSource`, so
+the import runs through the SAME `Migration` engine and `Match` rules as any
+other source — albums only, at the owner's decision. The format is specified
+in `docs/library-csv.md`; keep that file and the header aliases in `Csv.ALIASES`
+in step, because Mandarin's export will be written against the doc.
+
+- **Lenient about form, strict about evidence.** Comma, semicolon or tab; a
+  BOM; CRLF; quoted newlines; headers spelt any common way — all read. A
+  column not in `ALIASES` is IGNORED and listed back to the user, never
+  guessed at. Nothing in the reader decides a match.
+- **One row per track is the shape that matters.** Rows are grouped into
+  albums by canonical title and album artist, and each album carries its own
+  TRACK LISTING — the only evidence a barcode-less album has. A one-row-per-
+  album file can only match albums with a barcode.
+- **No barcode AND no listing means not searched for** (`unmatchable`, an
+  amber row with `CsvLibrary.NO_EVIDENCE`). Without that hook the engine would
+  ask for the missing listing, record a FAILED read, and fifty of those trip
+  `UNREADABLE_LIMIT` — the breaker for a broken check — on a file that simply
+  lacks the data. `ImportTest` pins it with sixty such albums.
+- **An album's id carries its evidence** (title, artist, barcode and track
+  titles, hashed). A refusal cached for a bare row must not be reused when a
+  richer export of the same album arrives.
+- **A spreadsheet mangles barcodes** (`075992736121` → `7.59927E+10`). Those are
+  dropped and counted in a warning rather than searched for as digits.
+- **The upload is the file's own bytes**, `fetch` with the `File` as the body,
+  and the server streams them into the parser: a track-per-row export of a big
+  library is ~20MB, which is why `HttpServer.MAX_BODY_BYTES` is 48MB, not 4MB
+  (4MB answered 413 "Payload Too Large" — `HttpServerTest` pins a 12MB upload).
+- **`<input type="file">` does nothing in a WebView without `FilePicker`**
+  (`onShowFileChooser`), the same trap as downloads. Its callback must be
+  answered every time, null on cancel, or the page never gets a picker again.
+  It asks for `*/*` because file managers label CSVs four different ways, and
+  `allowContentAccess` is on because the picked file arrives as `content://`.
+  None of that is testable off a phone — say so when handing it over.
+- **Known gap, for the owner to decide:** `Lookups.resolveAlbum` only puts a
+  title match to the track-listing check when the source album has NO barcode.
+  An album WITH a barcode that Qobuz does not find falls back to title and
+  artist and can be accepted on those alone. That predates the import (with
+  Spotify every album had a barcode Qobuz usually found) but it matters more
+  for a file. It was left as it is pending a decision, because it is the
+  matcher.
 
 ## Clearing a library — the one irreversible thing
 
@@ -188,13 +239,9 @@ the one that has to be asked for, and these must all stay:
 - **A playlist somebody else made is kept unless the user ticks the box.**
   Ownership must be KNOWN: an ownerless playlist is skipped, and if the account
   cannot be identified no playlist is touched. On Qobuz an owned playlist is
-  `playlist/delete` and a followed one `playlist/unsubscribe`; on Spotify both
-  are `DELETE /playlists/{id}/followers`.
-- **One batch is one request**: `TRACK_BATCH`/`ARTIST_BATCH` 50, `ALBUM_BATCH`
-  20 (Spotify's query-string maximum for albums), and the clients chunk at the
-  same numbers, so a failed batch names exactly the ids not removed. Removals
-  put the ids in the QUERY STRING — a body on a DELETE is something HTTP
-  clients disagree about.
+  `playlist/delete` and a followed one `playlist/unsubscribe`.
+- **One batch is one request**: 50 of each kind, and the client chunks at the
+  same number, so a failed batch names exactly the ids not removed.
 - **A dead sign-in, a cancel and an unlifted rate limit stop the run**; a few
   failed batches among successes do not; `FAILED_BATCH_LIMIT` failures with not
   one success is the removal itself being refused, and stops it.
@@ -214,16 +261,16 @@ delegate rather than rename. The splits made in 0.4.0 show the pattern:
   corroboration), `Writes.kt` (write-as-you-go, worker pool), `Existing.kt`.
 - `MigrateApi.kt` → `api/SignIns.kt` (sessions and OAuth routes),
   `api/ApiText.kt` (the JSON, CSV and HTML it answers with).
-- `SpotifyClient.kt` → `SpotifyTokens.kt`, `SpotifyPacer.kt`,
-  `SpotifyShapes.kt`. `Match.kt` → `Tracklist.kt`, `TitleTags.kt`.
-- `public/app.js` → `app.js`, `run.js`, `clear.js`.
+- `Match.kt` → `Tracklist.kt`, `TitleTags.kt`.
+- `public/app.js` → `app.js`, `import.js`, `run.js`, `clear.js`.
+- `MainActivity.kt` → `FilePicker.kt` (0.5.0, when the picker took it to 503).
 - Tests split by subject with shared `MigrationFixtures` / `ApiFixtures`.
 
 **Next in line**, at or near the limit — split these first if they grow:
-`SpotifyClient.kt` (500: move the searches into a `SpotifySearch` helper),
-`Migration.kt` (~475: the playlist phase is the natural next file),
-`MigrateApi.kt` (~460: `migrate()`/`clear()` option parsing), `app.js` (~410:
-the playlist picker), `MatchTest.kt`, `ApiTest.kt` and `QobuzClient.kt`.
+`Migration.kt` (~480: the playlist phase is the natural next file — unused
+since 0.5.0, but kept for when a service returns), `MainActivity.kt` (~460:
+the crash reporting is the natural next file), `QobuzClient.kt` (~450: the
+removals), `MigrateApi.kt` (~435: `migrate()`/`clear()` option parsing).
 Check with `python3 tools/check-file-length.py` and `wc -l`.
 
 ## Things about this codebase that are easy to get wrong
@@ -231,9 +278,9 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
 - **A service is either readable or readable-and-writable.** `MusicSource` is
   the reading half and `MusicTarget` adds the searches, the writes and the
   removals. A migration's SOURCE is only ever asked for reads.
-- **Qobuz counts durations in SECONDS.** Spotify's `duration_ms` is
-  milliseconds. The conversion happens once, in `toTrack`/`toQobuzTrack`, and
-  nowhere else. A matcher comparing 213 against 213000 rejects every track in
+- **Qobuz counts durations in SECONDS.** Everything else here counts
+  milliseconds. The conversion happens once, in `toQobuzTrack`, and nowhere
+  else. A matcher comparing 213 against 213000 rejects every track in
   the library and looks exactly like "nothing is on Qobuz".
 - **Qobuz puts the edition in a separate `version` field.** Title "Blue Monday"
   + version "2016 Remaster" against Spotify's one string. Recomposed in the
@@ -241,51 +288,6 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
 - **`optString` is unsafe.** Android's `org.json` returns the literal string
   `"null"` for a JSON null; the desktop one returns `""`. Every JVM test is
   blind to the difference. Use `str()` / `strOrNull()` from `Json.kt`.
-- **Spotify's album SEARCH returns no barcode, so albums must be searched BY
-  barcode.** `/search?type=album` yields SimplifiedAlbumObject, which has no
-  `external_ids` — so a candidate from `searchAlbums` always carries
-  `upc = ""`, and `matchAlbum`'s barcode tier compared a real Qobuz code
-  against an empty string for every candidate and could never fire. Everything
-  fell through to the title tiers, where the track-count gate then refused any
-  edition mismatch: **114 of 195 favourite albums reported "not found" on a
-  real library.** The fix is the `upc:` search filter (albums only), mirroring
-  `searchByIsrc` for tracks, and it must be tried BEFORE the title search —
-  an earlier version fetched the source barcode *after* searching, so the code
-  was never used to search for anything.
-  Because the result still carries no barcode, **the filter is the evidence**:
-  the code is stamped onto the result so the tier can see it, and only when the
-  result set is small (`UPC_TRUST_LIMIT`) — a barcode identifies one release,
-  and a crowd means the filter is not filtering, where stamping would be a
-  confidently wrong match.
-  The test fakes must model this: `FakeService.searchAlbums` strips `upc`,
-  because an earlier version returned it and thereby **hid the exact bug it
-  should have exposed** — the title path "matched on barcode" under test while
-  failing in production.
-- **A Spotify Client ID IS baked in, as a fallback, and the docs say whose it
-  is.** `Pkce.DEFAULT_CLIENT_ID`. Spotify's registrations are frozen, so "get your
-  own" is not a step the owner of this repository can complete, and an app that
-  demands one is simply unusable — that is why this changed, at the owner's
-  explicit request, from "ships none" to "ships one".
-  Three things hold it together and must stay:
-  **a saved id always wins** (it is resolved through ONE function —
-  `spotifyClientId()` — because a fallback applied at three sites out of four
-  is a sign-in that starts as one application and redeems the code as another,
-  and Spotify's error then talks about the code);
-  **the constant and the README appendix must agree**, which `ContractTest`
-  enforces;
-  and **the page and the appendix say what it costs** — the id belongs to
-  another project, so the consent screen names that application and the
-  requests count against its quota. Do not quietly drop those caveats to tidy
-  the copy. A client id is not secret: PKCE means there is no client secret and
-  the id travels in the authorise URL in plain sight.
-- **Spotify's redirect path is `/login`, not `/api/spotify/callback`.** The
-  shared community Client IDs — the only ones available while Spotify has new
-  registrations frozen — whitelist exactly one loopback path, and any other
-  gets `redirect_uri: Not matching configuration` before the user can sign in.
-  The port is forgiving (RFC 8252); the path is not. `Pkce.CALLBACK_PATH`
-  defines it, `/api/spotify/callback` is still served for an
-  already-registered URI, and `/login` has to be routed BEFORE the static
-  fallback or it 404s looking for an asset called "login".
 - **The app cannot load its own page without a network security config.**
   Android denies cleartext HTTP by default at targetSdk 28+, and the entire UI
   is served over plain http from 127.0.0.1 by the app's own server. v0.1.0
@@ -308,8 +310,7 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   has `[hidden] { display: none !important }`; do not remove it, and toggle
   visibility with `el.hidden`, never `style.display`.
 - **Batch every write, and count a failed batch as all of it.** The endpoint
-  maxima are 100 (Spotify playlist tracks) and 50 (everything else, both
-  services). A failed batch of fifty is one report row but *fifty* stranded
+  maximum is 50 on Qobuz. A failed batch of fifty is one report row but *fifty* stranded
   items — counting it as one understated the damage by forty-nine, which is a
   bug that shipped here once.
 - **WRITE AS YOU GO. A run that stops early must keep what it matched.**
@@ -335,28 +336,8 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   under the lock in Kotlin) BEFORE the write, or two concurrent workers carry
   off the same ids. An incremental flush passes `quiet` so it does not relabel
   a matching run as "writing".
-- **Obey 429 with the delay the service asked for.** Spotify sends
-  `Retry-After` and it is authoritative; guessing shorter turns one 429 into a
-  cascade. Qobuz sends nothing, so it backs off exponentially.
-- **OBEYING A 429 IS NOT ENOUGH — DO NOT EARN IT.** Measured on a real
-  9,635-album Roon library into Spotify: four workers burst past the rolling
-  window within the first few requests, take a 429 with a twenty second
-  `Retry-After`, wait it out, burst again. The page read "spotify is rate
-  limiting this app — waiting 20s (3 so far)" with the counter still on zero.
-  So the client PACES itself: after the first 429 it spaces requests,
-  doubling the gap on each further one (`PACE_START_MS` → `PACE_MAX_MS`) and
-  easing it back after `PACE_DECAY_AFTER` clean requests so one bad patch does
-  not slow a two-hour run for ever. A run that has never been throttled is
-  never paced — the gap starts at ZERO — so Qobuz, small libraries and the
-  tests are untouched, and a test pins that by asserting the slot was never
-  even claimed (without it the guard is an equivalent mutant, because the slot
-  arithmetic is a no-op at a gap of zero).
-  The slot is claimed SYNCHRONOUSLY — before the await, under the lock in
-  Kotlin — or four workers all read the same one and the burst is back.
-  The arithmetic is the argument: that library is one search plus up to two
-  track-listing reads per album, about 29,000 requests. Paced just under the
-  limit it is a couple of hours and it finishes; bursting into a 20s wait
-  every few requests it never does.
+- **Obey 429.** Qobuz sends no `Retry-After`, so the client backs off
+  exponentially. (Spotify did, and it was authoritative — see `c6d3de0`.)
 - **A SEARCH THAT COULD NOT BE MADE IS NOT A SEARCH THAT FOUND NOTHING.** This
   is the "cache the misses" rule one layer up, and it took a second real
   report to find. `safely()` collapsed every search failure into the caller's
@@ -375,16 +356,6 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   must still trip the other one. "Roon to Spotify seems unresponsive" was
   9,635 albums each waiting out a rate-limit backoff and then being recorded
   as a miss — days to report a library as absent.
-- **Retry-After is authoritative, so never wait LESS than it asked.** The rule
-  was written down and the code broke it: a `Math.min` against
-  `MAX_RETRY_WAIT_MS` turned "wait 600 seconds" into a 60-second wait and
-  another 429, five times over — precisely the cascade the rule exists to
-  prevent. Now a delay longer than a migration will hold for fails AT ONCE,
-  quoting the number Spotify asked for, so the user knows to come back.
-  And **one worker's 429 holds all of them**: Spotify counts per application,
-  so four workers each backing off privately resume together and earn the next
-  429 together. The hold lives on the client, and only ONE place sleeps on it —
-  setting the hold and also sleeping locally waits twice, which a test caught.
 - **A throttled run must LOOK different from a hung one.** `onRateLimit`
   existed on both clients and was passed by nothing but the
   tests — dead code in production. The progress label only changes when an
@@ -454,31 +425,6 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   album is still refused, **and that is the only reason this is allowed at
   all**. The tags are tried SHORTEST first, or a title with two of them gets
   cut back to something nobody owns.
-- **SPOTIFY'S SEARCH IS A QUOTED *AND* OF FIELD FILTERS, SO ASK TWICE.**
-  `album:"X" artist:"Y"` returns ZERO rows on any difference of spelling on
-  either side, and the matcher never gets to judge a candidate it was never
-  shown. Spotify calls 30 Seconds to Mars "Thirty Seconds to Mars" and King
-  Gizzard "King Gizzard & The Lizard Wizard"; Roon does not. Measured on a
-  real 9,681-album library: **1,969 albums came back "the search returned
-  nothing" against 908 for the same library on Qobuz**, whose search is plain
-  text — and the gates were not the problem, as ever. So when the filtered
-  query is empty, `searchAlbums` asks again as FREE TEXT.
-  This widens what is CONSIDERED and not what is ACCEPTED: `matchAlbum` still
-  wants a barcode, or title and artist and the track listing, so a candidate
-  whose artist does not agree is still refused. What it buys even then is a
-  usable reason — "the closest that artist has is X" rather than "nothing
-  called that" — and the unmatched report is the deliverable.
-  It costs one extra request only for the albums that currently find nothing,
-  and a test pins that the second question is not asked when the first one
-  answered, nor when there is no artist to add (the loose query would repeat
-  the filtered one).
-  **Be careful reading a cross-service comparison, though.** Of those 1,969,
-  747 were albums the user already OWNS on Qobuz, which says nothing about
-  Spotify, and 1,097 Qobuz missed too. Only **118** were found by a Qobuz
-  SEARCH and missed by Spotify's — so most of that gap is a real catalogue
-  difference (jazz reissues, Nina Simone compilations, live archive records),
-  not a bug. "Qobuz found it" is not evidence when the library came from
-  Qobuz.
 - **A SEARCH takes one artist, not everything the source calls the artist.**
   `Lookups.searchArtist`. Roon writes an album's artists as one
   slash-joined string — "Carla Bley/Steve Swallow/Andy Sheppard" — and Qobuz
@@ -512,8 +458,9 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   into one unmatched item and the corroboration tier then refuses every
   barcode-less album. Do not send a parameter to either service without a
   client that is known to work sending it too.
-- **A WebView does NOTHING with a download unless the app says what to do.**
-  Both CSV links are ordinary `<a download>` links to the app's own server, and
+- **A WebView does NOTHING with a download — or a file input — unless the app
+  says what to do.** Uploads: see `FilePicker` under "Importing a library
+  file". The CSV links are ordinary `<a download>` links to the app's own server, and
   with no `DownloadListener` tapping one does nothing at all, silently — dead
   from v0.1.0 until somebody tried them. The report is the actual output of a
   migration, so a dead download is not cosmetic: it is the whole point of the
@@ -531,28 +478,15 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   track. A read or a write that fails means something is actually wrong.
   `AuthError` is re-thrown through it: a dead sign-in must stop the run, not be
   reported as four thousand misses.
-- **The APK's server binds loopback and has no switch to widen it.** Two
-  services' access tokens and write access to somebody's library are behind it.
+- **The APK's server binds loopback and has no switch to widen it.** A Qobuz
+  access token and write access to somebody's library are behind it.
   Do not add a LAN option — now that it can also EMPTY a library, least of
   all.
-- **Sign-ins open in a real browser on Android, never the WebView.** A WebView
+- **The sign-in opens in a real browser on Android, never the WebView.** A WebView
   does not share the browser's cookies, so signing in there means typing a
   password into a window this app controls — the thing the redirect flow exists
   to avoid — and providers may refuse embedded WebViews outright.
-- **Spotify rotates refresh tokens, and lookups run four at a time.** A
-  refresh may return a new one, and the old one then stops working — so
-  persist on every refresh (`onTokens`), or a long-lived install loses its
-  sign-in with no way back. **The refresh is also SHARED**: an access token
-  lasts an hour and a ten thousand album library does not, so when it expires
-  mid-run every worker in flight reaches `accessToken()` at the same moment.
-  Unsynchronised, they each refresh with the same single-use token; one wins
-  and the rest are told it is revoked, and a loser's answer overwrites the
-  winner's. That does not fail a request — **it destroys the sign-in.** The
-  client holds `tokenLock` and re-checks inside it. A Qobuz
-  `user_auth_token` neither expires nor rotates, which is why this can only
-  ever bite on a run INTO Spotify.
-- **A PAGER MAPS EACH PAGE AS IT GOES.** `pageAll` takes a mapper in both
-  clients, and that is not a convenience — it is what
+- **A PAGER MAPS EACH PAGE AS IT GOES.** `pageAll` takes a mapper, and that is not a convenience — it is what
   stops a walk holding the whole library's raw JSON at once. Spotify's
   `/me/albums` returns the FULL album object, which carries
   `available_markets` (about 180 country codes) **on the album and on every
@@ -564,8 +498,8 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   `OutOfMemoryError … growth limit 268435456; giving up on allocation because
   <1% of heap free after GC`. Mapping inside the loop keeps ONE page live: an
   `Album` is a few hundred bytes against fifty-odd kilobytes of JSON.
-  A heap-growth test in `ClientsTest` guards it, sampled BETWEEN pages (the
-  peak is what kills, and a pager looks innocent once it has returned).
+  The heap-growth test that guarded it went with the Spotify client; Qobuz's
+  favourites are far leaner, but keep the mapper.
 - **An Error is not an Exception, and `catch (e: Exception)` does not catch
   one.** An `OutOfMemoryError`, a `StackOverflowError` or a missing class
   sails straight through, kills the worker thread, and Android's default
@@ -667,9 +601,10 @@ for f in app.js run.js clear.js; do unzip -p <apk> assets/web/$f | cmp - public/
 The page can be driven for real without a phone: a throwaway Gradle build
 that includes `android/core` can run `HttpServer` + `MigrateApi` over a
 `MemoryStore`, with assets read straight from `public/` and a fake `Http`
-standing in for Qobuz or Spotify, and Playwright's Chromium (pre-installed in
-the cloud sandbox) can then click through it. That is how the 0.4.0 clear-out
-flow — preview, confirm, remove, report — was checked end to end. It is not a
+standing in for Qobuz, and Playwright's Chromium (pre-installed in the cloud
+sandbox) can then click through it — including `setInputFiles` on the import
+card. That is how the 0.4.0 clear-out flow and the 0.5.0 import (choose a
+file, summary, preview, import, report) were checked end to end. It is not a
 WebView, so it does not replace the emulator for anything in `app/`.
 
 "The string is in the file" and "the component is declared with the right

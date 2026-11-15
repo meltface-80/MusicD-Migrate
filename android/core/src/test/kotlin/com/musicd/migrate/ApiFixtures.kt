@@ -42,10 +42,22 @@ abstract class ApiFixtures {
         store.putSetting("qobuz.session", JSONObject()
             .put("token", "t").put("userId", "u").put("appId", "a")
             .put("name", "Me").toString())
-        store.putSetting("spotify.session", JSONObject()
-            .put("accessToken", "at").put("refreshToken", "rt")
-            .put("expiresAt", System.currentTimeMillis() + 600_000)
-            .put("userId", "me").put("name", "Me").toString())
         return store
     }
+
+    /** Upload a library file the way the page does: the raw bytes as the body,
+     *  the file name in the query. */
+    protected fun upload(api: MigrateApi, csv: String, name: String = "library.csv") =
+        api.handle(Request("POST", "/api/import/file", mapOf("name" to name),
+            mapOf("host" to "127.0.0.1:3380", "content-type" to "text/csv"),
+            csv.toByteArray(Charsets.UTF_8), false, "127.0.0.1",
+            "/api/import/file?name=$name"))
+
+    /** A small library: two albums, one with a barcode, one with a listing. */
+    protected val SMALL_LIBRARY = """album artist,album,track,title,barcode
+Metallica,Master Of Puppets,1,Battery,075992736121
+Metallica,Master Of Puppets,2,Master Of Puppets,075992736121
+Miles Davis,Kind Of Blue,1,So What,
+Miles Davis,Kind Of Blue,2,Freddie Freeloader,
+"""
 }
