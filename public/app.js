@@ -31,6 +31,8 @@
       method: o.method || "GET",
       headers: headers,
       body: o.body === undefined ? undefined : JSON.stringify(o.body)
+    }).catch(function (e) {
+      throw unreachable(e);
     }).then(function (res) {
       if (res.status === 401) {
         return res.json().catch(function () { return {}; }).then(function (j) {
@@ -49,6 +51,18 @@
         return j;
       });
     });
+  }
+
+  /**
+   * "Failed to fetch" in words a person can act on. fetch() rejects like this
+   * only when no answer came back at all — and the server is this app's own,
+   * on this phone, so the usual cause is Android having paused the app while
+   * another one (the file picker) was in front.
+   */
+  function unreachable(e) {
+    return new Error("Couldn't reach the app's own server (" + ((e && e.message) || e) +
+      "). Android may have paused it while you were in another app — try again in a " +
+      "moment, and if it keeps happening, close the app and open it again.");
   }
 
   var toastTimer = null;
@@ -160,6 +174,7 @@
   // globals, so the lint's no-undef still catches a name that does not exist.
   M.$ = $;
   M.api = api;
+  M.unreachable = unreachable;
   M.toast = toast;
   M.fail = fail;
   M.refresh = refresh;

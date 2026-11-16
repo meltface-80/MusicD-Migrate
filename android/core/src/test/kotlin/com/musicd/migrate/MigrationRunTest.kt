@@ -366,9 +366,43 @@ class MigrationRunTest : MigrationFixtures() {
         val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "000000000000")))
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(
             Album("sal", "075992736121", "Master Of Puppets", listOf("Metallica"), 8)))
+        source.albumTrackListings["qal"] = listing("Battery", "Orion", "Damage, Inc.")
+        target.albumTrackListings["sal"] = listing("Battery", "Orion", "Damage, Inc.")
 
         val r = run(source, target, NOTHING.copy(doAlbums = true))
         assertEquals("the title tier picked it up", 1, r.counts["matched"])
+        assertEquals("and since 0.5.1 the listing had to agree", "exact+tracklist",
+            r.items[0].method)
+    }
+
+    @Test fun `a barcode the target lacks does not let title and artist alone decide`() {
+        // The owner's first real preview: 136 albums whose barcode the
+        // service did not have were matched on name only. Now the listing
+        // decides, exactly as for an album with no barcode at all.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "000000000000")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        source.albumTrackListings["qal"] = listing("Battery", "Orion", "Damage, Inc.")
+        target.albumTrackListings["sal"] = listing("Live intro", "Battery (Live)", "Encore")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(null, r.counts["matched"])
+        assertEquals(1, r.counts["unmatched"])
+        assertEquals(0, target.writtenAlbums.size)
+    }
+
+    @Test fun `a title-only match from an older run's cache is checked again`() {
+        val store = MemoryStore()
+        store.cacheMatch("qobuz", "qal", "spotify", "album", "sal", "exact")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(alb(upc = "000000000000")))
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sal", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        source.albumTrackListings["qal"] = listing("Battery", "Orion")
+        target.albumTrackListings["sal"] = listing("Something", "Else")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true), store)
+        assertEquals("the cached name-only match was not reused", null, r.counts["matched"])
+        assertEquals(0, target.writtenAlbums.size)
     }
 
     @Test fun `a barcode search that throws costs the tier, not the album`() {
@@ -376,6 +410,8 @@ class MigrationRunTest : MigrationFixtures() {
         val target = FakeService("spotify", catalogueAlbums = mutableListOf(
             Album("sal", "075992736121", "Master Of Puppets", listOf("Metallica"), 8)))
         target.upcSearchFails = true
+        source.albumTrackListings["qal"] = listing("Battery", "Orion")
+        target.albumTrackListings["sal"] = listing("Battery", "Orion")
 
         val r = run(source, target, NOTHING.copy(doAlbums = true))
         assertEquals(1, r.counts["matched"])

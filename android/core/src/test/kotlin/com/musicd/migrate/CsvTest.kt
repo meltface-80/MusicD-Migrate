@@ -161,6 +161,44 @@ class CsvTest {
         assertTrue(bare.startsWith("csv-"))
     }
 
+    @Test fun `library notes in an album title are left out, real titles are not`() {
+        // From a real export, where these titles made the search come back empty.
+        val cleaned = mapOf(
+            "Miracle Pill (12 tracks)" to "Miracle Pill",
+            "101 [Disc B]" to "101",
+            "Should God Forget- A Retrospective (Disc 1)" to "Should God Forget- A Retrospective",
+            "50 Years - Don't Stop Disc 1" to "50 Years - Don't Stop",
+            "Blur (Disc One)" to "Blur",
+            "Back in Black (2003)" to "Back in Black",
+            "The Complete Wooden Nickel Recordings (1 of 2) (2005 Remaster)" to
+                "The Complete Wooden Nickel Recordings (2005 Remaster)",
+            "Songs Of A Lost World (1)" to "Songs Of A Lost World",
+            "Who Can You Trust_" to "Who Can You Trust",
+            "Late Night Tales_ Hot Chip" to "Late Night Tales Hot Chip",
+            "Alter Bridge (2026) (2)" to "Alter Bridge",
+            "Humanz (Japanese Edition) [CD-02] (2017)" to "Humanz (Japanese Edition)",
+            "Damned Damned Damned CD4" to "Damned Damned Damned")
+        for ((raw, want) in cleaned) assertEquals(raw, want, CsvLibrary.cleanTitle(raw))
+        // Facts stay: these are part of what the record IS.
+        for (t in listOf("A Sort of Homecoming (Live)", "2112", "1999", "Volume 2", "Nymph_o",
+                "AE_LIVE 2016/2018",
+                "This Is Your Bloody Valentine [Mini Album]", "Antennas To Hell (Special Edition)",
+                "Disc", "(2003)")) {
+            assertEquals(t, t, CsvLibrary.cleanTitle(t))
+        }
+    }
+
+    @Test fun `the discs of one album become one album with one listing`() {
+        val l = lib("album artist,album,disc,track,title\n" +
+            "Fleetwood Mac,50 Years - Don't Stop Disc 1,1,1,Dreams\n" +
+            "Fleetwood Mac,50 Years - Don't Stop Disc 2,2,1,Tusk\n")
+        assertEquals(1, l.summary.albums)
+        val a = l.savedAlbums()[0]
+        assertEquals("50 Years - Don't Stop", a.title)
+        assertEquals(listOf("Dreams", "Tusk"), l.albumTracks(a.id).map { it.title })
+        assertTrue(l.summary.warnings.joinToString(), l.summary.warnings.any { it.contains("library notes") })
+    }
+
     @Test fun `a large track-per-row file parses quickly`() {
         val sb = StringBuilder("album artist,album,track,title,barcode\n")
         for (a in 1..10_000) for (t in 1..12) sb.append("Artist $a,Album $a,$t,Song $t,\n")

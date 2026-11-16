@@ -149,9 +149,18 @@ class HttpServer(
             headers[h.substring(0, colon).lowercase()] = h.substring(colon + 1).trim()
         }
 
+        // A body of unknown length arrives CHUNKED — a WebView streaming a
+        // picked file can send one. Read as a zero-length body, the chunks
+        // became the "next request", the connection was dropped mid-upload,
+        // and the page could only say "Failed to fetch".
+        val chunked = headers["transfer-encoding"]?.lowercase()?.contains("chunked") == true
         val length = headers["content-length"]?.toIntOrNull() ?: 0
         if (length > MAX_BODY_BYTES) throw HttpError(413, "Body too large")
-        val body = if (length > 0) ByteArray(length).also { readFully(input, it) } else ByteArray(0)
+        val body = when {
+            chunked -> readChunked(input)
+            length > 0 -> ByteArray(length).also { readFully(input, it) }
+            else -> ByteArray(0)
+        }
 
         val keepAlive = headers["connection"]?.lowercase() != "close"
         val q = target.indexOf('?')
@@ -173,6 +182,29 @@ class HttpServer(
             }
             sb.append(c.toChar())
             if (sb.length > MAX_HEADER_BYTES) throw HttpError(431, "Header line too long")
+        }
+    }
+
+    /** RFC 9112 chunked transfer coding: size line (hex, extensions ignored),
+     *  data, CRLF, until a zero-size chunk; trailers are read and dropped. */
+    private fun readChunked(input: InputStream): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val sizeLine = readLine(input) ?: throw HttpError(400, "Truncated chunked body")
+            val size = sizeLine.substringBefore(';').trim().toIntOrNull(16)
+                ?: throw HttpError(400, "Malformed chunk size")
+            if (size == 0) {
+                while (true) {
+                    val trailer = readLine(input) ?: break
+                    if (trailer.isEmpty()) break
+                }
+                return out.toByteArray()
+            }
+            if (out.size() + size > MAX_BODY_BYTES) throw HttpError(413, "Body too large")
+            val chunk = ByteArray(size)
+            readFully(input, chunk)
+            out.write(chunk)
+            readLine(input) // the CRLF after the data
         }
     }
 

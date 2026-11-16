@@ -89,6 +89,17 @@ class ImportTest : MigrationFixtures() {
         assertEquals(60, r.counts["unmatched"])
     }
 
+    @Test fun `a file album whose barcode Qobuz lacks, with no listing, is refused in amber`() {
+        val file = lib("artist,album,barcode\nMetallica,Master Of Puppets,075992736121\n")
+        val qobuz = FakeService("qobuz", catalogueAlbums = mutableListOf(
+            Album("q1", "", "Master Of Puppets", listOf("Metallica"), 8)))
+        val r = import(file, qobuz)
+        assertEquals(null, r.counts["matched"])
+        assertEquals("a refusal, not a broken check", null, r.counts["failed"])
+        assertTrue(r.items[0].note!!, r.items[0].note!!.contains("its barcode is not on qobuz"))
+        assertEquals(0, qobuz.writtenAlbums.size)
+    }
+
     @Test fun `an album already in Qobuz favourites is not searched for again`() {
         val file = lib("artist,album,barcode\nMetallica,Master Of Puppets,075992736121\n")
         val qobuz = FakeService("qobuz", libAlbums = mutableListOf(

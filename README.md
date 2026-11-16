@@ -46,11 +46,12 @@ not run until you have previewed it and typed "Qobuz".
    file…**. The app reads it and shows what it found before anything is looked
    up: how many albums, how many with a barcode, how many with a track listing,
    which columns it used and which it ignored, and any warnings (rows it
-   skipped, barcodes a spreadsheet mangled).
+   skipped, barcodes a spreadsheet mangled, library notes like "(12 tracks)"
+   or "Disc 1" that it left out of album titles before searching).
 3. **Preview.** Every album is looked for on Qobuz and nothing is written. The
    result is the real answer, not an estimate. **What was not found** lists
    every album that did not match, with the reason.
-4. Untick **Preview first** under *Options* and press **Import**. Matched
+4. Press **Import N albums into Qobuz** in the preview's results. Matched
    albums are added to your Qobuz favourite albums; ones already there are
    skipped. Download the full report as a CSV if you want to work through the
    misses.
@@ -73,6 +74,11 @@ evidence is not decisive, it matches nothing and says why.**
    own** (by title, ignoring "- Remastered"-style suffixes). A deluxe edition
    containing all of your standard one is accepted, and the report says which
    edition you got.
+   This applies to any album matched by name: one with no barcode, or one
+   whose barcode Qobuz doesn't have. A remaster or deluxe edition with bonus
+   tracks is judged the same way. And for a live album whose title matches
+   exactly, a "(Live)" that Qobuz puts on *every* track is ignored, since your
+   tags rarely carry it.
 3. **Nothing else.** An album with no barcode *and* no track listing in the
    file is not searched for at all, and the report says so. There is no "best
    guess" tier, because a best guess is indistinguishable from a real match once
@@ -126,7 +132,7 @@ everything already removed removed; run it again to finish.
 
 ## Install
 
-**Download: [`dist/mandarin-migration-0.5.0.apk`](dist/mandarin-migration-0.5.0.apk)**
+**Download: [`dist/mandarin-migration-0.5.1.apk`](dist/mandarin-migration-0.5.1.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
@@ -304,7 +310,7 @@ npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the po
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 193 tests
+cd android && ./gradlew :core:test                          # 204 tests
 ```
 
 `ContractTest` reads the page's scripts and fails when a route the page calls

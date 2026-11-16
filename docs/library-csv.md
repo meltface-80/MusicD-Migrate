@@ -66,6 +66,10 @@ track.** That is the difference between "found" and "could not tell".
   that and says how many it ignored.
 - **Same album, same `album` and `album_artist` on every row.** A row that
   spells either differently becomes a separate album.
+- **Keep library notes out of `album` if you can.** "(12 tracks)", "Disc 1",
+  "[CD2]", "(1 of 2)", a trailing "(2003)" or "(2)" are recognised and left
+  out when searching, and the discs of one set are then read as one album —
+  but the export is cleaner without them, and the year has its own column.
 - Size: tens of megabytes is fine (a ten-thousand-album library, one row per
   track, is about 20MB). The upload limit is 48MB and 400,000 rows.
 

@@ -45,7 +45,7 @@ npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the po
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 193 tests
+cd android && ./gradlew :core:test                          # 204 tests
 ```
 
 If `dl.google.com` is unreachable (it is blocked in some cloud sandboxes),
@@ -86,6 +86,16 @@ So the rule, in `Match.kt` and everything that feeds it:
 
 Concretely, and do not relax any of these without a very good argument:
 
+- **0.5.1 changed three album rules, each on the owner's decision after his
+  first real preview (14,524 albums, report and export in hand):**
+  (1) a title match is put to the track listing even when the album HAS a
+  barcode — one the service does not have (136 albums had matched on name
+  alone); (2) an edition-stripped title whose track COUNT differs goes to the
+  listing instead of being discarded ("War Child" vs its remaster with bonus
+  tracks; 190 albums), still refused with the check off; (3) for an EXACT
+  album-title match, a "(Live)" tag on EVERY one of the service's tracks is
+  ignored on both sides (`Tracklist.withoutUniformLive`; 52 live albums
+  shared 0 tracks). All three are pinned by tests that fail when reverted.
 - **There is no "best guess" tier.** For a TRACK: ISRC; or
   title+artist+duration; or title-without-edition-suffix+artist+tighter-
   duration. Below that, nothing. For an ALBUM: barcode; or
@@ -212,13 +222,21 @@ in step, because Mandarin's export will be written against the doc.
   It asks for `*/*` because file managers label CSVs four different ways, and
   `allowContentAccess` is on because the picked file arrives as `content://`.
   None of that is testable off a phone — say so when handing it over.
-- **Known gap, for the owner to decide:** `Lookups.resolveAlbum` only puts a
-  title match to the track-listing check when the source album has NO barcode.
-  An album WITH a barcode that Qobuz does not find falls back to title and
-  artist and can be accepted on those alone. That predates the import (with
-  Spotify every album had a barcode Qobuz usually found) but it matters more
-  for a file. It was left as it is pending a decision, because it is the
-  matcher.
+- **Library notes come out of album titles** (`CsvLibrary.cleanTitle`):
+  "(12 tracks)", "(Disc 1)", "[CD-02]", " CD4", "(1 of 2)", a trailing "(2003)"
+  or "(2)", and an "_" at the end or before a space. Repeated until stable.
+  588 of 1,053 empty searches in the owner's export were these. It changes
+  what is searched and compared, never what is accepted, and grouping by the
+  cleaned title merges the discs of a set into one album with one listing.
+  A real title keeps its "_" ("Nymph_o"), "(Live)" and "[Mini Album]".
+- **The upload reads the file first** (`FileReader`), then sends text of known
+  length, retrying once if nothing answers. Handing fetch() the File made the
+  WebView stream a `content://` URI; a stream of unknown length goes CHUNKED,
+  which `HttpServer` could not read (it can now — `readChunked`), and the user
+  saw only "Failed to fetch". `api()` turns that message into words.
+- **After an import PREVIEW, the results offer "Import N albums into Qobuz".**
+  The only way to the real run used to be an unticked box under Options, and a
+  real user finished a preview with "no option to import".
 
 ## Clearing a library — the one irreversible thing
 
@@ -269,8 +287,9 @@ delegate rather than rename. The splits made in 0.4.0 show the pattern:
 **Next in line**, at or near the limit — split these first if they grow:
 `Migration.kt` (~480: the playlist phase is the natural next file — unused
 since 0.5.0, but kept for when a service returns), `MainActivity.kt` (~460:
-the crash reporting is the natural next file), `QobuzClient.kt` (~450: the
-removals), `MigrateApi.kt` (~435: `migrate()`/`clear()` option parsing).
+the crash reporting is the natural next file), `QobuzClient.kt` (~440: the
+removals; `QobuzShapes.kt` already split off), `MigrateApi.kt` (~435:
+`migrate()`/`clear()` option parsing), `Match.kt` (~430), `Lookups.kt` (~405).
 Check with `python3 tools/check-file-length.py` and `wc -l`.
 
 ## Things about this codebase that are easy to get wrong
@@ -338,6 +357,8 @@ Check with `python3 tools/check-file-length.py` and `wc -l`.
   a matching run as "writing".
 - **Obey 429.** Qobuz sends no `Retry-After`, so the client backs off
   exponentially. (Spotify did, and it was authoritative — see `c6d3de0`.)
+  **A 502/503/504 is retried twice** (nginx in front of Qobuz; three albums of
+  a real preview failed on one), then reported in words, never as HTML.
 - **A SEARCH THAT COULD NOT BE MADE IS NOT A SEARCH THAT FOUND NOTHING.** This
   is the "cache the misses" rule one layer up, and it took a second real
   report to find. `safely()` collapsed every search failure into the caller's

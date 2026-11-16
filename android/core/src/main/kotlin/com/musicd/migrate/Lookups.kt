@@ -114,9 +114,16 @@ class Lookups(
     fun resolveAlbum(a: Album): Resolved {
         if (a.id.isEmpty()) return Resolved(null, null, "the source returned no usable album")
         store.cachedMatch(sourceName, a.id, targetName, "album")?.let { c ->
-            log.cacheHits.incrementAndGet()
-            return if (c.toId != null) Resolved(c.toId, c.method, "from the match cache")
-                   else Resolved(null, null, c.method)
+            // A match cached on title and artist ALONE ("exact"/"close", no
+            // "+tracklist") predates the rule below, or was made with the check
+            // off. With the check on it is not evidence enough to reuse: look
+            // again. Everything else in the cache — barcode matches, listing
+            // matches, refusals — stands.
+            if (!(c.toId != null && options.corroborate && c.method in TITLE_ONLY)) {
+                log.cacheHits.incrementAndGet()
+                return if (c.toId != null) Resolved(c.toId, c.method, "from the match cache")
+                       else Resolved(null, null, c.method)
+            }
         }
 
         // The barcode first, exactly as a track's ISRC goes first.
@@ -179,7 +186,12 @@ class Lookups(
         if (r == null) r = Match.matchAlbum(emptyList(), want, options.strict)
 
         // A barcode match is decisive and is never second-guessed. A title
-        // match without one is not, so it has to be corroborated or given up.
+        // match is not, so it has to be corroborated or given up — and that
+        // includes an album that HAS a barcode the service does not have.
+        // Until 0.5.1 such an album skipped the check and could be accepted
+        // on title and artist alone; the owner's first real preview matched
+        // 136 albums that way, and the owner decided they must be checked
+        // like any barcode-less album.
         //
         // `needsListing` is the other way round: matchAlbum found something
         // whose only difference is a trailing tag that says something --
@@ -187,7 +199,25 @@ class Lookups(
         // title and an artist are not decisive. Those never match on their
         // own; the listing is the only thing that can promote them, so they
         // are only put to it when the user has that check on.
-        if ((r.matched || r.needsListing) && corroborating) r = corroborate(r, wantTitles)
+        val titleTier = (r.matched && r.method != "upc") || r.needsListing
+        if (titleTier && options.corroborate) {
+            if (corroborating) {
+                r = corroborate(r, wantTitles, a.title)
+            } else if (!source.hasListing(a.id)) {
+                // A barcode the service lacks, and nothing in the source to
+                // check a title match against: an ordinary refusal, amber.
+                val cand = r.album ?: r.shortlist.firstOrNull()
+                r = Match.Result(reason = "its barcode is not on $targetName, and there is " +
+                    "no track listing for it to check " +
+                    (cand?.let { "\"${it.title}\" " } ?: "a title match ") +
+                    "against — a title and an artist alone are not decisive")
+            } else {
+                // Read only now: a barcode match, the usual case, never
+                // needs the listing, so it is not paid for up front.
+                wantTitles = safely { source.albumTracks(a.id) } ?: emptyList()
+                r = corroborate(r, wantTitles, a.title)
+            }
+        }
 
         val id = r.album?.id
 
@@ -217,13 +247,19 @@ class Lookups(
      * that name is there but only 3 of your 11 tracks are on it" is something
      * a user can act on, and "not found" is not.
      */
-    private fun corroborate(r: Match.Result, wantTitles: List<Track>): Match.Result {
+    private fun corroborate(
+        r: Match.Result, wantTitles: List<Track>, wantTitle: String
+    ): Match.Result {
         val shortlist = (if (r.shortlist.isNotEmpty()) r.shortlist else listOfNotNull(r.album))
             .take(CORROBORATE_CANDIDATES)
         var closest: Match.Agreement? = null
         for (cand in shortlist) {
             val tracks = safely { target.albumTracks(cand.id) } ?: emptyList()
-            val check = Match.tracklistCorroborates(wantTitles, tracks)
+            // Judged per candidate: the shortlist can mix exact titles with
+            // edition-stripped ones, and only an exact one may ignore a
+            // uniform "(Live)". See Tracklist.withoutUniformLive.
+            val check = Match.tracklistCorroborates(wantTitles, tracks,
+                exactTitle = Canon.canon(cand.title) == Canon.canon(wantTitle))
             if (check.ok) {
                 // One of these anywhere in the run proves the check works,
                 // and disarms the circuit breaker for good. See
@@ -279,6 +315,9 @@ class Lookups(
     }
 
     companion object {
+        /** Album match methods that rest on title and artist alone. */
+        private val TITLE_ONLY = setOf("exact", "close")
+
         /**
          * The ONE artist name to put in a search query.
          *

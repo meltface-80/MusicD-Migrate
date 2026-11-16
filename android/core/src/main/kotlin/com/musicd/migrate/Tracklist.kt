@@ -43,6 +43,36 @@ object Tracklist {
      * bonus tracks still contains all of the standard edition, and refusing it
      * for being bigger is not the job -- reporting the sizes is.
      */
+    /** A trailing live tag on a track title: "(Live)", "[Live at X]",
+     *  " - Live in Tokyo". */
+    private val LIVE_TAG = Regex(
+        """\s*(?:[(\[]\s*live\b[^)\]]*[)\]]|-\s*live\b[^()\[\]]*)\s*$""",
+        RegexOption.IGNORE_CASE)
+
+    /**
+     * A live album's tracks with the live tag taken off — on both sides — but
+     * only when EVERY track the service lists carries one.
+     *
+     * Services title each track of a live record "Statesboro Blues (Live)";
+     * the owner's tags say "Statesboro Blues". The listing check treats
+     * "(Live)" as a different performance, which is right in general, and so
+     * found 0 of 7 tracks in common for "At Fillmore East" — a record whose
+     * TITLE matched exactly and which is live from start to finish on both
+     * sides. 52 albums of a real library were refused that way.
+     *
+     * On the owner's decision (0.5.1), and narrow on purpose: only for an
+     * exact album-title match ([corroborates]' `exactTitle`), and only when
+     * the tag is UNIFORM. A studio album against a live one under a different
+     * title — "(Live)" added to the album name — still goes through the
+     * needsListing path untouched, where "one live" is not "one" and the
+     * coverage fails exactly where it should.
+     */
+    fun withoutUniformLive(want: List<Track>, cand: List<Track>): Pair<List<Track>, List<Track>> {
+        if (cand.isEmpty() || !cand.all { LIVE_TAG.containsMatchIn(it.title) }) return want to cand
+        fun strip(l: List<Track>) = l.map { it.copy(title = LIVE_TAG.replace(it.title, "")) }
+        return strip(want) to strip(cand)
+    }
+
     fun agreement(wantTitles: List<Track>?, candTitles: List<Track>?): Match.Agreement {
         val want = trackTitleSet(wantTitles)
         val cand = trackTitleSet(candTitles)
@@ -75,9 +105,14 @@ object Tracklist {
     fun corroborates(
         wantTitles: List<Track>?,
         candTitles: List<Track>?,
-        minCoverage: Double = MIN_COVERAGE
+        minCoverage: Double = MIN_COVERAGE,
+        /** The album titles matched EXACTLY: a "(Live)" on every one of the
+         *  candidate's tracks may be ignored. See [withoutUniformLive]. */
+        exactTitle: Boolean = false
     ): Match.Agreement {
-        val a = agreement(wantTitles, candTitles)
+        val (w, c) = if (exactTitle) withoutUniformLive(wantTitles.orEmpty(), candTitles.orEmpty())
+                     else wantTitles.orEmpty() to candTitles.orEmpty()
+        val a = agreement(w, c)
         // The two "could not check" cases are kept apart from "checked and it
         // disagrees", because they call for different action from the user:
         // one is something to look into, the other is a record that is not
