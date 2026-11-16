@@ -179,7 +179,23 @@ class Lookups(
                 target.searchAlbums(Canon.stripVersion(a.title), searchArtist(a.artists))
             }
             if (got.error != null) searchError = got.error else searchOk.incrementAndGet()
-            val r2 = Match.matchAlbum(got.results, want, options.strict)
+            var r2 = Match.matchAlbum(got.results, want, options.strict)
+            // Nothing at all for "Siamese Dream (Original)": ask again without
+            // the "(Original)" or catalogue number (TitleTags.searchNoise).
+            // Only with the listing check on, because whatever comes back is a
+            // title match and the listing is what has to decide it.
+            val bare = if (got.error == null && got.results.isEmpty() && options.corroborate)
+                TitleTags.searchNoise(a.title) else null
+            if (bare != null) {
+                log.searches.incrementAndGet()
+                val again = trySearch {
+                    target.searchAlbums(Canon.stripVersion(bare), searchArtist(a.artists))
+                }
+                if (again.error != null) searchError = again.error else searchOk.incrementAndGet()
+                if (again.results.isNotEmpty()) {
+                    r2 = Match.matchAlbum(again.results, want.copy(title = bare), options.strict)
+                }
+            }
             // Keep whichever matched, else the more informative refusal.
             r = if (r2.matched) r2 else (if (r?.matched == true) r else r2)
         }

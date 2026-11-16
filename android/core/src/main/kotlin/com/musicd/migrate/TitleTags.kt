@@ -27,6 +27,41 @@ internal object TitleTags {
         return out.sortedBy { it.length }
     }
 
+    /** A trailing "(Original)" or a catalogue number in brackets of any kind:
+     *  "(395 136-2)", "[COOKCD646]", "(AMAN2510PR)", "(00946 397342 2 1)". */
+    private val SEARCH_NOISE = Regex(
+        """\s*[(\[{]\s*(?:original|[a-z]{0,6}-?\d[\d\s\-.]*[a-z]{0,3})\s*[)\]}]\s*$""",
+        RegexOption.IGNORE_CASE)
+
+    /**
+     * The title without a trailing "(Original)" or catalogue number, or null
+     * if it has neither — what to search for when the title as written came
+     * back EMPTY.
+     *
+     * On the owner's decision (0.5.2): 65 empty searches in a real library
+     * were "Siamese Dream (Original)", "Solitude Standing (395 136-2)" and the
+     * like, notes from the owner's tagging that no service puts in a title.
+     * This changes what is SEARCHED, never what is accepted: the caller only
+     * asks again with the track-listing check on, and anything it finds has
+     * to pass that check like any other title match. Deliberately NOT any
+     * trailing tag: without "(Live)" a search finds the studio record, and a
+     * live album's untagged track titles would agree with it.
+     */
+    fun searchNoise(title: String): String? {
+        var t = title
+        while (true) {
+            val m = SEARCH_NOISE.find(t) ?: break
+            // "(Original)" itself, or a catalogue number with at least three
+            // digits: "(2)" and "(CD1)" are library notes CsvLibrary handles.
+            if (!m.value.contains("original", ignoreCase = true) &&
+                m.value.count { it.isDigit() } < 3) break
+            val next = t.substring(0, m.range.first).trimEnd()
+            if (next.isBlank()) break
+            t = next
+        }
+        return if (t != title) t else null
+    }
+
     private val TAG_EDGES = Regex("""^[\s(\[\-:]+|[)\]\s]+$""")
 
     /**

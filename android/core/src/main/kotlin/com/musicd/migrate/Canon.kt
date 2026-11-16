@@ -23,7 +23,7 @@ object Canon {
      */
     fun canon(s: String?): String {
         if (s.isNullOrEmpty()) return ""
-        val folded = Normalizer.normalize(s.lowercase(), Normalizer.Form.NFKD)
+        val folded = Normalizer.normalize(foldLookalikes(s.lowercase()), Normalizer.Form.NFKD)
         val sb = StringBuilder(folded.length)
         for (ch in folded) {
             when {
@@ -42,6 +42,28 @@ object Canon {
     }
 
     private val WHITESPACE = Regex("\\s+")
+
+    /** Cyrillic letters used as Latin ones in a Latin name: "KoЯn". */
+    private val LOOKALIKES = mapOf(
+        'я' to 'r', 'и' to 'n', 'а' to 'a', 'в' to 'b', 'е' to 'e', 'ё' to 'e',
+        'к' to 'k', 'м' to 'm', 'н' to 'h', 'о' to 'o', 'р' to 'p', 'с' to 'c',
+        'т' to 't', 'у' to 'y', 'х' to 'x', 'і' to 'i', 'ј' to 'j', 'ѕ' to 's')
+    private val WORD = Regex("""\p{L}+""")
+
+    /**
+     * "KoЯn" is Korn: Я is a stylised R. Without this canon dropped the Я and
+     * compared "ko n" with "korn", and 15 albums of a real library were
+     * refused as "by Korn — not by KoЯn" (0.5.2, on the owner's decision).
+     *
+     * Only in a word that MIXES Latin and Cyrillic letters, which no real
+     * Russian word does. A name written in Cyrillic is left alone: reading
+     * "Кино" as Latin would invent a word nobody wrote.
+     */
+    internal fun foldLookalikes(s: String): String = WORD.replace(s) { m ->
+        val w = m.value
+        if (w.none { it in 'a'..'z' } || w.none { it in LOOKALIKES }) w
+        else String(CharArray(w.length) { i -> LOOKALIKES[w[i]] ?: w[i] })
+    }
 
     /*
      * The words that mark an EDITION rather than a different recording.
