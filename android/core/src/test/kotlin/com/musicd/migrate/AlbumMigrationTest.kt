@@ -326,4 +326,51 @@ class AlbumMigrationTest : MigrationFixtures() {
         val r = run(source, target, NOTHING.copy(doAlbums = true))
         assertEquals(null, r.counts["matched"])
     }
+
+    // ------------------------------------------- 0.5.2, from a real preview
+
+    private fun siamese(): Pair<FakeService, FakeService> {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "Siamese Dream (Original)", listOf("The Smashing Pumpkins"), 3)))
+        source.albumTrackListings["qal"] = listing("Cherub Rock", "Quiet", "Today")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("sd", "", "Siamese Dream", listOf("The Smashing Pumpkins"), 3)))
+        return source to target
+    }
+
+    @Test fun `an empty search is asked again without (Original), and the listing decides`() {
+        val (source, target) = siamese()
+        target.albumTrackListings["sd"] = listing("Cherub Rock", "Quiet", "Today")
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(r.items.toString(), 1, r.counts["matched"])
+        assertEquals("exact+tracklist", r.items[0].method)
+        assertEquals(listOf("Siamese Dream (Original)", "Siamese Dream"),
+            target.albumQueriesSeen.map { it.first })
+    }
+
+    @Test fun `a record found by the retried search still has to agree track by track`() {
+        val (source, target) = siamese()
+        target.albumTrackListings["sd"] = listing("Other", "Songs", "Entirely")
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(null, r.counts["matched"])
+        // And with the check off nothing is asked again: there would be
+        // nothing to decide it.
+        val (s2, t2) = siamese()
+        val off = run(s2, t2, NOTHING.copy(doAlbums = true, corroborate = false))
+        assertEquals(null, off.counts["matched"])
+        assertEquals(1, t2.albumQueriesSeen.size)
+    }
+
+    @Test fun `KoЯn's album is found on the service under Korn`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "Issues", listOf("KoЯn"), 3)))
+        source.albumTrackListings["qal"] = listing("Dead", "Falling Away from Me", "Trash")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("iss", "", "Issues", listOf("Korn"), 3)))
+        target.albumTrackListings["iss"] = listing("Dead", "Falling Away from Me", "Trash")
+        // The search was never the problem -- the real report quoted Korn's
+        // albums back -- only the artist comparison was.
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(r.items.toString(), 1, r.counts["matched"])
+    }
 }

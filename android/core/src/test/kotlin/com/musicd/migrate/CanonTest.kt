@@ -152,4 +152,15 @@ class CanonTest {
         assertEquals(0.0, Canon.overlap(setOf("a"), setOf("b")), 0.0001)
         assertEquals(0.0, Canon.overlap(emptySet(), setOf("a")), 0.0001)
     }
+
+    @Test fun `a Cyrillic letter styling a Latin name reads as the Latin letter`() {
+        // 15 albums of a real library: "by Korn — not by KoЯn".
+        assertEquals("korn", Canon.canon("KoЯn"))
+        assertTrue(Canon.overlap(Canon.artistSet("KoЯn"), Canon.artistSet("Korn")) > 0.0)
+        // A word wholly in Cyrillic is a Cyrillic word, not a disguised one.
+        assertEquals("кино", Canon.foldLookalikes("кино"))
+        assertEquals("ВИА Гра", Canon.foldLookalikes("ВИА Гра"))
+        // Still not somebody else's band.
+        assertFalse(Canon.overlap(Canon.artistSet("KoЯn"), Canon.artistSet("Korn Tribute")) > 0.0)
+    }
 }

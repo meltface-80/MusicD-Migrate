@@ -290,8 +290,10 @@ class MatchTest {
 
     @Test fun `the tracklist threshold is where it says it is`() {
         val ten = tl("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
-        val seven = tl("a", "b", "c", "d", "e", "f", "g")
-        val six = tl("a", "b", "c", "d", "e", "f")
+        // Each with a track of its own, so this measures the threshold and not
+        // the shorter-edition rule (every track of theirs among yours).
+        val seven = tl("a", "b", "c", "d", "e", "f", "g", "theirs")
+        val six = tl("a", "b", "c", "d", "e", "f", "theirs")
         assertEquals(0.7, Match.TRACKLIST_MIN_COVERAGE, 0.0001)
         assertTrue("7 of 10 passes", Match.tracklistCorroborates(ten, seven).ok)
         assertFalse("6 of 10 does not", Match.tracklistCorroborates(ten, six).ok)
@@ -331,5 +333,45 @@ class MatchTest {
             Album("no", "", "Something Else", listOf("Band"), null)), want)
         assertEquals("in score order, and a caller with no barcode works down it",
             listOf("a", "b"), r.shortlist.map { it.id })
+    }
+
+    // ------------------------------------------- 0.5.2, from a real preview
+
+    @Test fun `a shorter edition whose every track is on yours is accepted`() {
+        // "Train": 19 tracks owned, Qobuz's 13 all among them -- 68%, refused
+        // until 0.5.2. Here 5 of 9 (55%).
+        val mine = tl("A", "B", "C", "D", "E", "F", "G", "H", "I")
+        val c = Match.tracklistCorroborates(mine, tl("A", "B", "C", "D", "E"))
+        assertTrue(c.reason, c.ok)
+        assertTrue(c.reason, c.reason.contains("shorter edition"))
+    }
+
+    @Test fun `a shorter edition is refused below its floors or with a track of its own`() {
+        val nine = tl("A", "B", "C", "D", "E", "F", "G", "H", "I")
+        assertFalse("four tracks is under the floor",
+            Match.tracklistCorroborates(nine.take(6), tl("A", "B", "C", "D")).ok)
+        val sixteen = tl(*Array(16) { "Song $it" })
+        assertFalse("5 of 16 is under a third: an EP of a longer record",
+            Match.tracklistCorroborates(sixteen, tl("Song 0", "Song 1", "Song 2", "Song 3",
+                "Song 4")).ok)
+        assertFalse("one track of its own makes it another record",
+            Match.tracklistCorroborates(nine, tl("A", "B", "C", "D", "E", "Not yours")).ok)
+    }
+
+    @Test fun `only (Original) and catalogue numbers are left out of a retried search`() {
+        val noise = mapOf(
+            "Siamese Dream (Original)" to "Siamese Dream",
+            "Solitude Standing (395 136-2)" to "Solitude Standing",
+            "Live Album [COOKCD646]" to "Live Album",
+            "Record (AMAN2510PR)" to "Record",
+            "Thing (00946 397342 2 1)" to "Thing",
+            "Gish (Original) (314 517 977-2)" to "Gish")
+        for ((raw, want) in noise) assertEquals(raw, want, TitleTags.searchNoise(raw))
+        // A tag that says something about the record is kept: without
+        // "(Live)" a search finds the studio album.
+        for (t in listOf("Far From Home (Live 1988)", "Volume (2)", "Album (CD1)",
+                "Kind Of Blue (Live)", "Demos Vol. 1", "(Original)", "Original Soundtrack")) {
+            assertEquals(t, null, TitleTags.searchNoise(t))
+        }
     }
 }

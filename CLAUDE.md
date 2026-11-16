@@ -45,7 +45,7 @@ npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the po
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 204 tests
+cd android && ./gradlew :core:test                          # 211 tests
 ```
 
 If `dl.google.com` is unreachable (it is blocked in some cloud sandboxes),
@@ -96,6 +96,20 @@ Concretely, and do not relax any of these without a very good argument:
   album-title match, a "(Live)" tag on EVERY one of the service's tracks is
   ignored on both sides (`Tracklist.withoutUniformLive`; 52 live albums
   shared 0 tracks). All three are pinned by tests that fail when reverted.
+- **0.5.2 added three more, on the owner's decision after his second
+  preview** (967 not found, report in hand), each pinned the same way:
+  (1) a title search that comes back EMPTY is asked again without a trailing
+  "(Original)" or catalogue number (`TitleTags.searchNoise`; 78 albums) —
+  only with the listing check on, and the listing still decides. Never any
+  other tag: without "(Live)" the search finds the studio record, and a live
+  album's untagged track titles would agree with it. (2) A SHORTER edition is
+  accepted when every one of its tracks is among the owner's, it has at least
+  5, and it covers at least a third of what the owner has
+  (`Tracklist.isShorterEdition`; "Train", 13 of the owner's 19; 26 albums) —
+  the one exception to "coverage of what the user owns", and a different
+  edition, never a different record. (3) A Cyrillic letter in a word that
+  MIXES scripts reads as its Latin lookalike (`Canon.foldLookalikes`: KoЯn
+  is Korn, 15 albums); an all-Cyrillic word is left alone.
 - **There is no "best guess" tier.** For a TRACK: ISRC; or
   title+artist+duration; or title-without-edition-suffix+artist+tighter-
   duration. Below that, nothing. For an ALBUM: barcode; or

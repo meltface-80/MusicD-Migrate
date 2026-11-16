@@ -73,6 +73,29 @@ object Tracklist {
         return strip(want) to strip(cand)
     }
 
+    /** The fewest tracks a shorter edition may have, and the least of the
+     *  owner's album it may cover. See [isShorterEdition]. */
+    const val SHORTER_EDITION_MIN_TRACKS = 5
+    const val SHORTER_EDITION_MIN_COVERAGE = 1.0 / 3
+
+    /**
+     * The owner has the deluxe, the service only the standard edition: EVERY
+     * one of the service's tracks is on the owner's album, but that is under
+     * [MIN_COVERAGE] of what the owner has. "Train" — 19 tracks owned, 13 on
+     * Qobuz, all 13 of them among the 19.
+     *
+     * On the owner's decision (0.5.2), after 26 such albums of a real library
+     * were refused. It accepts a different EDITION, never a different record:
+     * a record whose tracks are all on yours is not somebody else's. The
+     * floors keep it to that: five tracks, so a single or a two-track promo
+     * cannot be "all of its tracks", and a third of the owner's album, so a
+     * five-track EP of a thirty-track album with the same name is still
+     * refused. The lowest a real one went was 11 of 30.
+     */
+    private fun isShorterEdition(a: Match.Agreement) =
+        a.candCount >= SHORTER_EDITION_MIN_TRACKS && a.shared == a.candCount &&
+            a.coverage >= SHORTER_EDITION_MIN_COVERAGE
+
     fun agreement(wantTitles: List<Track>?, candTitles: List<Track>?): Match.Agreement {
         val want = trackTitleSet(wantTitles)
         val cand = trackTitleSet(candTitles)
@@ -128,6 +151,11 @@ object Tracklist {
             return a.copy(ok = false, unreadable = true, reason =
                 "the other service would not list that album's tracks, so the match " +
                 "could not be corroborated")
+        }
+        if (a.coverage < minCoverage && isShorterEdition(a)) {
+            return a.copy(ok = true, reason = "matched on title, artist and track listing: " +
+                "theirs is a shorter edition, all ${a.candCount} of its tracks among your " +
+                "${a.wantCount}")
         }
         if (a.coverage < minCoverage) {
             return a.copy(ok = false, reason =

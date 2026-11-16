@@ -79,6 +79,12 @@ evidence is not decisive, it matches nothing and says why.**
    tracks is judged the same way. And for a live album whose title matches
    exactly, a "(Live)" that Qobuz puts on *every* track is ignored, since your
    tags rarely carry it.
+   If Qobuz only has a *shorter* edition (you own the deluxe), it is accepted
+   when every one of its tracks is on yours, it has at least 5, and that is at
+   least a third of your album. And a title that finds nothing at all is
+   searched for once more without a trailing "(Original)" or catalogue number
+   such as "(395 136-2)"; whatever that finds still has to pass the track
+   listing.
 3. **Nothing else.** An album with no barcode *and* no track listing in the
    file is not searched for at all, and the report says so. There is no "best
    guess" tier, because a best guess is indistinguishable from a real match once
@@ -132,7 +138,7 @@ everything already removed removed; run it again to finish.
 
 ## Install
 
-**Download: [`dist/mandarin-migration-0.5.1.apk`](dist/mandarin-migration-0.5.1.apk)**
+**Download: [`dist/mandarin-migration-0.5.2.apk`](dist/mandarin-migration-0.5.2.apk)**
 — open it on the phone and Android will ask you to allow installing from that
 source once. (That is the last build published before the rename; CI replaces
 it with `mandarin-migration-<version>.apk` and rewrites this link when the new
@@ -310,7 +316,7 @@ npx eslint@9 --config tools/eslint.config.mjs public/*.js   # no-undef is the po
 python3 tools/check-android-cleartext.py
 python3 tools/check-file-length.py                          # no source file over 500 lines
 node tools/make-icons.js && git diff --exit-code public/icons/
-cd android && ./gradlew :core:test                          # 204 tests
+cd android && ./gradlew :core:test                          # 211 tests
 ```
 
 `ContractTest` reads the page's scripts and fails when a route the page calls
