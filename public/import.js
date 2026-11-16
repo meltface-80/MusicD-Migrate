@@ -4,10 +4,9 @@
  * import its albums into Qobuz favourites. Loaded after app.js; see the note
  * there about window.Mandarin.
  *
- * The file goes to the server AS IT IS, as the request body: a track-per-row
- * export of a big library is tens of megabytes, and reading it into a
- * JavaScript string first would hold it twice in a phone's WebView for no
- * reason. The server parses it and answers with a summary.
+ * The file is read here and its text sent as the request body (see readFile
+ * for why it is not streamed); the server parses it and answers with a
+ * summary.
  */
 
 (function (M) {
@@ -69,28 +68,65 @@
   $("o-dry").addEventListener("change", updateGoLabel);
 
   /**
-   * Send the chosen file. fetch() rather than api(): api() sends JSON, and
-   * this is the file's own bytes, so the server can stream it into the
-   * parser.
+   * Read the chosen file HERE, then send its text.
+   *
+   * It used to be handed to fetch() as the File itself, for the WebView to
+   * stream from the picker's content:// URI while uploading. Reading first
+   * does two things: the body has a known length (a stream of unknown length
+   * goes CHUNKED, which the app's server once could not read — and the page
+   * then saw only "Failed to fetch"), and a file the phone will not let us
+   * read fails HERE, with its own message, instead of looking like a dead
+   * server. FileReader rather than file.text(): an older WebView lacks it.
    */
-  $("file-input").addEventListener("change", function () {
-    var file = this.files && this.files[0];
-    this.value = ""; // so choosing the same file again still fires
-    if (!file) return;
-    $("file-note").textContent = "Reading " + file.name + "…";
-    fetch("/api/import/file?name=" + encodeURIComponent(file.name), {
+  function readFile(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(String(r.result || "")); };
+      r.onerror = function () {
+        reject(new Error("Couldn't read " + file.name + " from this phone (" +
+          ((r.error && r.error.name) || "unknown error") + "). Try choosing it again, or " +
+          "copy it into Downloads first."));
+      };
+      r.readAsText(file);
+    });
+  }
+
+  /** POST the file's text, once more after a pause if nothing answered. */
+  function upload(name, text, retried) {
+    return fetch("/api/import/file?name=" + encodeURIComponent(name), {
       method: "POST",
-      headers: { "Content-Type": "text/csv" },
-      body: file
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+      body: text
     }).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (j) {
         if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
         return j;
       });
+    }, function (e) {
+      // No answer at all. Coming back from the file picker the app may
+      // still be waking up: one retry, then say so in words.
+      if (retried) throw M.unreachable(e);
+      return new Promise(function (r) { setTimeout(r, 1500); })
+        .then(function () { return upload(name, text, true); });
+    });
+  }
+
+  $("file-input").addEventListener("change", function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    var input = this;
+    $("file-note").textContent = "Reading " + file.name + "…";
+    readFile(file).then(function (text) {
+      // Cleared only now that it is read, so choosing the same file again
+      // still fires a change.
+      input.value = "";
+      $("file-note").textContent = "Sending " + file.name + "…";
+      return upload(file.name, text, false);
     }).then(function (j) {
       toast(plural(j.albums, "album") + " found in " + j.fileName + ".");
       return M.refresh();
     }).catch(function (e) {
+      input.value = "";
       $("file-note").textContent = "No file chosen.";
       fail(e);
     });
@@ -100,11 +136,13 @@
     api("/api/import/forget", { method: "POST" }).then(M.refresh).catch(fail);
   });
 
-  $("go").addEventListener("click", function () {
+  /** Start the import: a preview when dryRun, the real thing otherwise.
+   *  Also what the results panel's "Import N albums" button calls. */
+  function startImport(dryRun) {
     var body = {
       direction: "csv-to-qobuz",
       albums: true,
-      dryRun: $("o-dry").checked,
+      dryRun: dryRun,
       strict: $("o-strict").checked,
       corroborate: $("o-corroborate").checked
     };
@@ -112,7 +150,10 @@
     api("/api/migrate", { method: "POST", body: body })
       .then(function (j) { M.watch(j.jobId); })
       .catch(function (e) { $("go").disabled = false; fail(e); });
-  });
+  }
 
+  $("go").addEventListener("click", function () { startImport($("o-dry").checked); });
+
+  M.startImport = startImport;
   M.renderImport = renderImport;
 })(window.Mandarin);

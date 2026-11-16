@@ -99,6 +99,33 @@ class HttpServerTest {
         assertEquals(1, j.getInt("albums"))
     }
 
+    @Test fun `a chunked upload arrives whole, and the connection survives it`() {
+        // A WebView streaming a file whose length it does not know sends
+        // Transfer-Encoding: chunked. The server once read that as an empty
+        // body, answered early, then read the chunks as the NEXT request and
+        // dropped the connection mid-upload — which the page can only report
+        // as "Failed to fetch".
+        val csv = "album artist,album,title\r\nMetallica,Master Of Puppets,Battery\r\n" +
+            "Metallica,Master Of Puppets,Orion\r\n"
+        val half = csv.length / 2
+        java.net.Socket("127.0.0.1", server.port).use { s ->
+            s.soTimeout = 5000
+            val out = s.getOutputStream()
+            fun chunk(t: String) = Integer.toHexString(t.toByteArray().size) + ";ext=1\r\n" + t + "\r\n"
+            val req = "POST /api/import/file?name=c.csv HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                "Content-Type: text/csv\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                chunk(csv.substring(0, half)) + chunk(csv.substring(half)) + "0\r\n\r\n" +
+                // and a second request on the same connection
+                "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            out.write(req.toByteArray()); out.flush()
+            val all = s.getInputStream().readBytes().toString(Charsets.UTF_8)
+            assertTrue(all, all.startsWith("HTTP/1.1 200"))
+            assertTrue("the whole body arrived: $all", all.contains("\"tracks\":2"))
+            assertEquals("both requests were answered: $all", 2,
+                Regex("HTTP/1.1 200").findAll(all).count())
+        }
+    }
+
     @Test fun `a library file of tens of megabytes is accepted over the socket`() {
         // A one-row-per-track export of a ten-thousand-album library is about
         // 20MB. The server used to refuse any body over 4MB with a 413, which

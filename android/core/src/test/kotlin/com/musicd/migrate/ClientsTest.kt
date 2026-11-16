@@ -64,6 +64,32 @@ class ClientsTest {
         assertNull(toQobuzAlbum(JSONObject("""{"id":1,"title":"X"}"""))!!.year)
     }
 
+    @Test fun `a Qobuz 502 is retried, and one that persists is described in words`() {
+        // A real preview of 14,500 albums had three searches fail with nginx's
+        // "502 Bad Gateway" — a passing fault on Qobuz's side — and the report
+        // quoted the raw HTML page as the reason.
+        val page = "<html><head><title>502 Bad Gateway</title></head></html>"
+        val waits = ArrayList<Long>()
+        val once = FakeHttp(listOf(FakeHttp.res(502, page),
+            FakeHttp.res(200, """{"albums":{"items":[]}}""")))
+        QobuzClient(QobuzSession(token = "t"), once, sleeper = { waits.add(it) })
+            .searchAlbums("Powerage", "AC/DC")
+        assertEquals("retried once and then answered", 2, once.calls.size)
+        assertTrue("with a pause first: $waits", waits.isNotEmpty())
+
+        val always = FakeHttp(listOf(FakeHttp.res(503, page)))
+        try {
+            QobuzClient(QobuzSession(token = "t"), always, sleeper = {})
+                .searchAlbums("Powerage", "AC/DC")
+            fail("a 503 that never clears must still fail")
+        } catch (e: RuntimeException) {
+            assertTrue(e.message!!, e.message!!.contains("503"))
+            assertTrue(e.message!!, e.message!!.contains("temporary"))
+            assertFalse("no raw HTML in the reason: ${e.message}", e.message!!.contains("<html>"))
+        }
+        assertEquals("three tries in all", 3, always.calls.size)
+    }
+
     @Test fun `a Qobuz 401 is an AuthError, not a generic failure`() {
         val qz = QobuzClient(QobuzSession(token = "t"),
             FakeHttp(listOf(FakeHttp.res(401, "nope"))), sleeper = {})

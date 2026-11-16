@@ -51,6 +51,15 @@ class QobuzClient(
         const val DEFAULT_APP_ID = "942852567"
         const val MAX_RETRIES = 4
 
+        /** Retries of a 502/503/504 before it is reported. */
+        const val GATEWAY_RETRIES = 2
+
+        private fun gatewayName(status: Int) = when (status) {
+            502 -> "Bad Gateway"
+            503 -> "Service Unavailable"
+            else -> "Gateway Timeout"
+        }
+
         fun md5Hex(s: String): String =
             MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
@@ -108,6 +117,7 @@ class QobuzClient(
         // see, because the failure arrives as an ordinary non-200.
         val path = endpoint.trimStart('/')
         var attempt = 0
+        var gatewayTries = 0
 
         while (true) {
             val qs = query(params + mapOf("app_id" to appId))
@@ -137,6 +147,19 @@ class QobuzClient(
 
             if (res.status == 401) {
                 throw AuthError("Qobuz sign-in has expired or was rejected — sign in again.")
+            }
+            // A gateway fault — nginx's 502/503/504 in front of Qobuz — passes
+            // in seconds. A real 14,500-album preview lost three albums to
+            // one, so it is retried twice before it counts.
+            if (res.status in 502..504) {
+                if (gatewayTries++ < GATEWAY_RETRIES) {
+                    sleeper(1000L * gatewayTries)
+                    continue
+                }
+                throw RuntimeException("Qobuz HTTP ${res.status} (${gatewayName(res.status)}) " +
+                    "— a temporary fault on Qobuz's side, still there after " +
+                    "${GATEWAY_RETRIES + 1} tries. Nothing was cached; running it again " +
+                    "retries it.")
             }
             if (!res.ok) {
                 // THE BODY IS THE DIAGNOSIS. Qobuz distinguishes its failures
@@ -410,74 +433,4 @@ class QobuzClient(
         request(if (owned) "playlist/delete" else "playlist/unsubscribe",
             mapOf("playlist_id" to playlistId), "POST")
     }
-}
-
-// ---------------------------------------------------------- shape conversion
-
-/**
- * A Qobuz track in this app's shape.
- *
- * @param albumFallback the album block, when the track came from an album
- *   listing that does not repeat it.
- *
- * THE TWO CONVERSIONS THAT MATTER ARE BOTH HERE: seconds to milliseconds, and
- * title+version to one title. Doing either at the call site would mean doing
- * it right in six places and wrong in the seventh.
- */
-internal fun toQobuzTrack(t: JSONObject?, albumFallback: Album?): Track? {
-    if (t == null) return null
-    val id = t.strOrNull("id") ?: return null
-    val albumObj = t.objOrNull("album")
-    val version = t.strOrNull("version")
-    val title = if (version != null) "${t.str("title")} ($version)" else t.str("title")
-    val performer = t.objOrNull("performer")?.strOrNull("name")
-        ?: albumObj?.objOrNull("artist")?.strOrNull("name")
-        ?: albumFallback?.artists?.firstOrNull()
-        ?: ""
-    return Track(
-        id = id,
-        isrc = t.str("isrc"),
-        title = title.trim(),
-        artists = if (performer.isEmpty()) emptyList() else listOf(performer),
-        album = albumObj?.strOrNull("title") ?: albumFallback?.title ?: "",
-        // Qobuz counts in SECONDS. Everything downstream counts in
-        // milliseconds.
-        durationMs = t.longOrNull("duration")?.takeIf { it > 0 }?.times(1000L)
-    )
-}
-
-internal fun toQobuzAlbum(a: JSONObject?): Album? {
-    if (a == null) return null
-    val id = a.strOrNull("id") ?: return null
-    val version = a.strOrNull("version")
-    val title = if (version != null) "${a.str("title")} ($version)" else a.str("title")
-    val artist = a.objOrNull("artist")?.strOrNull("name")
-        ?: a.arrOrNull("artists")?.objects()?.firstOrNull()?.strOrNull("name")
-        ?: ""
-    return Album(
-        id = id,
-        upc = a.str("upc"),
-        title = title.trim(),
-        artists = if (artist.isEmpty()) emptyList() else listOf(artist),
-        trackCount = a.intOrNull("tracks_count"),
-        year = qobuzYear(a)
-    )
-}
-
-private fun qobuzYear(a: JSONObject): Int? {
-    for (key in listOf("release_date_original", "release_date_stream", "released_at")) {
-        if (a.isNull(key)) continue
-        val v = a.opt(key)
-        if (v is Number) {
-            // `released_at` is unix seconds; the release_date_* fields are
-            // "YYYY-MM-DD" strings. Both appear, on the same object.
-            val y = java.time.Instant.ofEpochSecond(v.toLong())
-                .atZone(java.time.ZoneOffset.UTC).year
-            if (y > 1000) return y
-        } else {
-            val y = v?.toString()?.take(4)?.toIntOrNull()
-            if (y != null && y > 1000) return y
-        }
-    }
-    return null
 }

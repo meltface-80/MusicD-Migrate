@@ -92,6 +92,15 @@ interface MusicSource {
      * ordinary refusal with a reason. Only asked when the listing check is on.
      */
     fun unmatchable(album: Album): String? = null
+
+    /**
+     * Whether [albumTracks] can say anything for this album. True for a
+     * service (a read that comes back empty there is a FAILED read); false for
+     * a library-file row with no track listing, so a title match for an album
+     * whose barcode the service lacks is refused with a reason rather than
+     * recorded as a broken check.
+     */
+    fun hasListing(albumId: String): Boolean = true
 }
 
 /**

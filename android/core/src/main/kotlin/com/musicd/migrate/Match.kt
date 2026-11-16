@@ -300,9 +300,19 @@ object Match {
 
             // A stripped-title match whose track count disagrees is the
             // standard edition being offered for the deluxe, or the reverse.
-            // The user asked for the record they own.
+            // On its own that is not the record the user owns — but it may
+            // CONTAIN it ("War Child" against "War Child (2002 Remaster)"
+            // with four bonus tracks), and the track listing measures exactly
+            // that. So it is not a match here; it goes to the listing, like a
+            // title with an added tag. On the owner's decision (0.5.1), after
+            // 190 albums of a real library were refused this way before the
+            // listing ever saw them. With the listing check off nothing
+            // changes: it is still refused.
             if (close && want.trackCount != null && c.trackCount != null &&
-                c.trackCount != want.trackCount) continue
+                c.trackCount != want.trackCount) {
+                byListing.add(ByListing(c, sim))
+                continue
+            }
 
             val countScore = if (want.trackCount != null && c.trackCount != null)
                 (if (c.trackCount == want.trackCount) 1.0 else 0.0) else 0.5
@@ -378,8 +388,9 @@ object Match {
     fun tracklistCorroborates(
         wantTitles: List<Track>?,
         candTitles: List<Track>?,
-        minCoverage: Double = TRACKLIST_MIN_COVERAGE
-    ): Agreement = Tracklist.corroborates(wantTitles, candTitles, minCoverage)
+        minCoverage: Double = TRACKLIST_MIN_COVERAGE,
+        exactTitle: Boolean = false
+    ): Agreement = Tracklist.corroborates(wantTitles, candTitles, minCoverage, exactTitle)
 
     /**
      * Artists, by name.

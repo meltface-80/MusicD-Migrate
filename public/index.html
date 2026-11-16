@@ -198,6 +198,11 @@
     <p class="res-error" id="res-error" hidden></p>
     <div class="counts" id="res-counts"></div>
     <div class="row">
+      <!-- Shown after an import PREVIEW: the step that actually writes, where
+           the person is already looking. It used to be an unticked box under
+           Options, which is how a finished preview left a real user with "no
+           option to import". -->
+      <button id="res-import" class="primary" hidden></button>
       <button id="res-unmatched" class="ghost">What didn't move</button>
       <a class="ghost btn" id="res-csv" download>Download the full report (CSV)</a>
       <button class="ghost" id="res-close">Close</button>

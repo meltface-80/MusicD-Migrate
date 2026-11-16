@@ -74,8 +74,26 @@
       : job.status === "interrupted" ? "Interrupted"
       : "Failed");
     $("res-items").hidden = true;
+    offerImport(job);
     loadHistory();
     M.refresh().catch(function () {});
+  }
+
+  /**
+   * After a finished import PREVIEW, the button that does it for real — for
+   * the albums the preview matched, from the same file, with the same
+   * options. Only from finish(): a preview reopened from the history may be
+   * of a different file than the one now loaded.
+   */
+  function offerImport(job) {
+    var btn = $("res-import");
+    var n = (job.counts || {}).matched || 0;
+    var ready = !isClear(job) && job.dryRun && job.status === "done" && n > 0 &&
+      M.state && M.state["import"];
+    btn.hidden = !ready;
+    if (!ready) return;
+    btn.textContent = "Import " + n + (n === 1 ? " album" : " albums") + " into Qobuz";
+    btn.onclick = function () { btn.hidden = true; M.startImport(false); };
   }
 
   function isClear(job) { return /^clear-/.test((job && job.direction) || ""); }
@@ -90,6 +108,7 @@
    */
   function showReport(job, id, title) {
     $("results").hidden = false;
+    $("res-import").hidden = true;
     $("res-title").textContent = title;
     renderCounts($("res-counts"), job.counts || {}, null);
     // On the page, not in a toast: a run that stopped says why in one long

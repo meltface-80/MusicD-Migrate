@@ -25,6 +25,7 @@ export default [
         "setTimeout", "clearTimeout", "setInterval", "clearInterval",
         "requestAnimationFrame", "cancelAnimationFrame",
         "alert", "confirm", "prompt",
+        "FileReader", "Promise", "Blob", "File",
       ].map((name) => [name, "readonly"])),
     },
     rules: {

@@ -75,6 +75,8 @@ class CsvLibrary(albums: List<CsvAlbum>, val summary: CsvSummary) : MusicSource 
     override fun albumDetail(albumId: String): Album? = byId[albumId]?.album
     override fun albumTracks(albumId: String): List<Track> = byId[albumId]?.tracks.orEmpty()
 
+    override fun hasListing(albumId: String): Boolean = !byId[albumId]?.tracks.isNullOrEmpty()
+
     override fun unmatchable(album: Album): String? =
         if (album.upc.isEmpty() && byId[album.id]?.tracks.isNullOrEmpty()) NO_EVIDENCE else null
 
@@ -149,6 +151,47 @@ class CsvLibrary(albums: List<CsvAlbum>, val summary: CsvSummary) : MusicSource 
             return if (d.length in 8..14) d else ""
         }
 
+        /**
+         * Notes a ripper or a tagger put in an album title, which the service
+         * will never have: "(12 tracks)", "(Disc 1)", "[Disc B]", " Disc 2",
+         * "(1 of 2)", "(2003)", a lone "(1)", and the "_" a filename-safe tool
+         * leaves where a "?" or ":" was. Measured on a real export: 588 of the
+         * 1,053 albums whose search came back empty had one, because the
+         * search asked for "Miracle Pill (12 tracks)".
+         *
+         * This changes what is SEARCHED FOR and compared, never what is
+         * ACCEPTED: a match still needs a barcode or the track listing. And
+         * because rows are grouped by the cleaned title, "Album (Disc 1)" and
+         * "Album (Disc 2)" become one album with one listing — which is what
+         * the service has.
+         */
+        private val LIBRARY_NOTES = listOf(
+            Regex("""\s*[(\[]\s*\d+\s+tracks?\s*[)\]]""", RegexOption.IGNORE_CASE),
+            Regex("""\s*[(\[]\s*(?:disc|disk|cd)[\s\-–]*(?:\d+|one|two|three|four|five|[a-e])""" +
+                """(?:\s*(?:of|/)\s*\d+)?\s*[)\]]""", RegexOption.IGNORE_CASE),
+            Regex("""\s+[-–]?\s*(?:disc|disk|cd)[\s\-–]*(?:\d+|one|two|three|four|five|[a-e])\s*$""",
+                RegexOption.IGNORE_CASE),
+            Regex("""\s*\(\s*\d+\s+of\s+\d+\s*\)""", RegexOption.IGNORE_CASE),
+            Regex("""\s*\(\s*(?:19|20)\d{2}\s*\)\s*$"""),
+            Regex("""\s*\(\d\)\s*$"""))
+
+        /** The title without library notes, or the title itself if that
+         *  would leave nothing. */
+        internal fun cleanTitle(raw: String): String {
+            // An underscore only where a filename-safe tool put it for a "?"
+            // or a ":" — at the end, or before a space. "Nymph_o" is a title.
+            var t = raw.replace(Regex("""_(?=\s|$)"""), "")
+            // Repeated until nothing changes: "Alter Bridge (2026) (2)" needs
+            // the "(2)" off before the "(2026)" is at the end.
+            while (true) {
+                val before = t
+                for (rx in LIBRARY_NOTES) t = rx.replace(t, "")
+                t = t.replace(Regex("""\s+"""), " ").trim()
+                if (t == before) break
+            }
+            return t.ifEmpty { raw.trim() }
+        }
+
         internal fun sha(s: String): String =
             MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
                 .take(8).joinToString("") { "%02x".format(it) }
@@ -170,6 +213,7 @@ class CsvLibrary(albums: List<CsvAlbum>, val summary: CsvSummary) : MusicSource 
         private var skipped = 0
         private var mangled = 0
         private var conflictingBarcodes = 0
+        private val cleanedTitles = HashSet<String>()
         private val groups = LinkedHashMap<String, Group>()
 
         private fun cell(record: List<String>, cols: Map<CsvField, Int>, f: CsvField): String =
@@ -177,7 +221,9 @@ class CsvLibrary(albums: List<CsvAlbum>, val summary: CsvSummary) : MusicSource 
 
         fun add(record: List<String>, cols: Map<CsvField, Int>) {
             rows++
-            val album = cell(record, cols, CsvField.ALBUM)
+            val rawAlbum = cell(record, cols, CsvField.ALBUM)
+            val album = cleanTitle(rawAlbum)
+            if (album != rawAlbum.trim()) cleanedTitles.add(rawAlbum)
             val albumArtist = cell(record, cols, CsvField.ALBUM_ARTIST)
             val artist = cell(record, cols, CsvField.ARTIST)
             val credited = albumArtist.ifEmpty { artist }
@@ -241,6 +287,11 @@ class CsvLibrary(albums: List<CsvAlbum>, val summary: CsvSummary) : MusicSource 
             if (conflictingBarcodes > 0) warnings.add("$conflictingBarcodes row" +
                 "${if (conflictingBarcodes == 1) "" else "s"} gave a different barcode from the " +
                 "rest of the album; the first one was used.")
+            if (cleanedTitles.isNotEmpty()) warnings.add("${cleanedTitles.size} album " +
+                "title${if (cleanedTitles.size == 1) "" else "s"} carried library notes " +
+                "such as \"(12 tracks)\", \"Disc 1\" or \"(2003)\", left out when looking " +
+                "them up — e.g. \"${cleanedTitles.first()}\". Discs of one album are " +
+                "looked up as one.")
             if (shape == "albums") warnings.add("This file has one row per album, so only " +
                 "albums with a barcode can be matched. An export with one row per track lets " +
                 "the others be checked by their track listing.")

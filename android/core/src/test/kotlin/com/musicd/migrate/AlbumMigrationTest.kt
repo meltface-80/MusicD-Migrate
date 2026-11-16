@@ -256,4 +256,74 @@ class AlbumMigrationTest : MigrationFixtures() {
             "Carla Bley", target.albumQueriesSeen[0].second)
         assertEquals("and it still costs exactly one search", 1, target.searchCount.get())
     }
+
+    // ------------------------------------------- 0.5.1, from a real preview
+
+    @Test fun `an edition with bonus tracks is decided by the listing, not refused on count`() {
+        // "War Child" (10 tracks) against "War Child (2002 Remaster)" (14):
+        // refused on the count before the listing was ever read. 190 albums
+        // of a real library went that way.
+        val mine = listing("Bungle In The Jungle", "Ladies", "Back-Door Angels")
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "War Child", listOf("Jethro Tull"), 3)))
+        source.albumTrackListings["qal"] = mine
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("rem", "", "War Child (2002 Remaster)", listOf("Jethro Tull"), 5)))
+        target.albumTrackListings["rem"] = listing("Bungle In The Jungle", "Ladies",
+            "Back-Door Angels", "Paradise Steakhouse", "Sealion II")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(r.items.toString(), 1, r.counts["matched"])
+        assertEquals("tracklist", r.items[0].method)
+
+        // With the listing check off, a count mismatch is still refused.
+        val off = run(source, FakeService("spotify", catalogueAlbums = target.catalogueAlbums),
+            NOTHING.copy(doAlbums = true, corroborate = false))
+        assertEquals(null, off.counts["matched"])
+    }
+
+    @Test fun `a live album whose every track the service tags Live matches on an exact title`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "At Fillmore East", listOf("The Allman Brothers Band"), 3)))
+        source.albumTrackListings["qal"] = listing("Statesboro Blues", "Stormy Monday",
+            "Whipping Post")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("afe", "", "At Fillmore East", listOf("The Allman Brothers Band"), 3)))
+        target.albumTrackListings["afe"] = listing("Statesboro Blues (Live)",
+            "Stormy Monday (Live at Fillmore East, 1971)", "Whipping Post - Live")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(r.items.toString(), 1, r.counts["matched"])
+        assertEquals("exact+tracklist", r.items[0].method)
+    }
+
+    @Test fun `a Live tag on only some tracks is still a different performance`() {
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "At Fillmore East", listOf("The Allman Brothers Band"), 3)))
+        source.albumTrackListings["qal"] = listing("Statesboro Blues", "Stormy Monday",
+            "Whipping Post", "Hot 'Lanta")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("afe", "", "At Fillmore East", listOf("The Allman Brothers Band"), 4)))
+        // Three of four tagged Live: stripping those three would make 3 of 4
+        // (75%) agree and pass. Not uniform, so nothing may be stripped.
+        target.albumTrackListings["afe"] = listing("Statesboro Blues (Live)",
+            "Stormy Monday (Live)", "Whipping Post (Live)", "Bonus studio take")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals("not uniform, so nothing is ignored", null, r.counts["matched"])
+    }
+
+    @Test fun `a uniform Live is not ignored when the album title itself differs by Live`() {
+        // The needsListing path: "Kind Of Blue" against "Kind Of Blue (Live)".
+        // There the live tags are the evidence that it is another record.
+        val source = FakeService("qobuz", libAlbums = mutableListOf(
+            Album("qal", "", "Kind Of Blue", listOf("Miles Davis"), 2)))
+        source.albumTrackListings["qal"] = listing("So What", "Freddie Freeloader")
+        val target = FakeService("spotify", catalogueAlbums = mutableListOf(
+            Album("live", "", "Kind Of Blue (Live)", listOf("Miles Davis"), 2)))
+        target.albumTrackListings["live"] = listing("So What (Live)", "Freddie Freeloader (Live)")
+
+        val r = run(source, target, NOTHING.copy(doAlbums = true))
+        assertEquals(null, r.counts["matched"])
+    }
 }
